@@ -23,6 +23,8 @@ export default function RegisterPage() {
         id: data.user.id,
         full_name: fullName
       })
+      const { inicializarBaremosUsuario } = await import('@/lib/fatigaService')
+await inicializarBaremosUsuario(data.user.id)
       router.push('/dashboard')
     }
     setLoading(false)

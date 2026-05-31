@@ -11,11 +11,35 @@ const DISCIPLINE_COLORS: Record<string, { bg: string; text: string }> = {
   'Spinning':              { bg: 'bg-teal-900',   text: 'text-teal-300' },
   'Natación':              { bg: 'bg-purple-900', text: 'text-purple-300' },
   'Paddle surf':           { bg: 'bg-cyan-900',   text: 'text-cyan-300' },
-  'Fuerza tren superior':  { bg: 'bg-orange-900', text: 'text-orange-300' },
+  'Fuerza tren superior A':{ bg: 'bg-orange-900', text: 'text-orange-300' },
+  'Fuerza tren superior B':{ bg: 'bg-orange-900', text: 'text-orange-300' },
   'Fuerza tren inferior':  { bg: 'bg-yellow-900', text: 'text-yellow-300' },
   'Descanso':              { bg: 'bg-gray-800',   text: 'text-gray-500' },
   'Compromiso':            { bg: 'bg-orange-900', text: 'text-orange-400' },
   'Competición':           { bg: 'bg-red-900',    text: 'text-red-400' },
+}
+
+const ZONE_COLORS: Record<number, string> = {
+  1: 'bg-sky-400',
+  2: 'bg-green-400',
+  3: 'bg-yellow-400',
+  4: 'bg-orange-400',
+  5: 'bg-red-500',
+}
+
+const DISCIPLINE_ICONS: Record<string, string> = {
+  'Running':                '🏃',
+  'Bici carretera':         '🚴',
+  'BTT':                    '🚵',
+  'Spinning':               '⚡',
+  'Natación':               '🏊',
+  'Paddle surf':            '🏄',
+  'Fuerza tren superior A': '💪',
+  'Fuerza tren superior B': '💪',
+  'Fuerza tren inferior':   '🦵',
+  'Descanso':               '😴',
+  'Compromiso':             '📅',
+  'Competición':            '🏁',
 }
 
 interface Session {
@@ -34,6 +58,8 @@ interface Session {
   competition_importance?: string
   day_type?: string
   planned_load?: number
+  modalidad?: string
+  distancia?: string
 }
 
 interface Props {
@@ -109,19 +135,35 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh }: Prop
               <div className="space-y-1">
                 {daySessions.map(s => {
                   const disc = s.discipline || s.type
-                  const colors = DISCIPLINE_COLORS[disc] || { bg: 'bg-gray-800', text: 'text-gray-400' }
+                  const discNorm = disc.includes('superior') ? (disc.includes('A') ? 'Fuerza tren superior A' : 'Fuerza tren superior B') : disc.includes('inferior') ? 'Fuerza tren inferior' : disc
+                  const colors = DISCIPLINE_COLORS[discNorm] || { bg: 'bg-gray-800', text: 'text-gray-400' }
                   const isComp = s.day_type === 'competition'
-                  return (
+      return (
                     <div key={s.id} onClick={e => handleSessionClick(e, s)}
-                      className={`text-xs px-1.5 py-0.5 rounded-md ${colors.bg} ${colors.text} truncate
+                      className={`text-xs px-1.5 py-1 rounded-md ${colors.bg} ${colors.text} truncate
                         ${isComp ? 'border border-red-500' : ''}
                         ${s.completed ? 'opacity-60' : ''}`}>
-                      {isComp && s.competition_importance && (
-                        <span className="mr-1">
-                          {s.competition_importance === 'A' ? '★' : s.competition_importance === 'B' ? '◆' : '●'}
+                      <div className="flex items-center gap-1">
+                        {/* Icono disciplina */}
+                        <span className="text-xs">{DISCIPLINE_ICONS[discNorm] || '📋'}</span>
+                        {/* Zona (circulito de color) */}
+                        {s.planned_zone && ZONE_COLORS[s.planned_zone] && (
+                          <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${ZONE_COLORS[s.planned_zone]}`} />
+                        )}
+                        {/* RPE estimada */}
+                        {s.planned_load && (
+                          <span className="text-xs opacity-60 font-mono">{s.planned_load}</span>
+                        )}
+                        {/* Título */}
+                        <span className="truncate">
+                          {isComp && s.competition_importance && (
+                            <span className="mr-0.5">
+                              {s.competition_importance === 'A' ? '★' : s.competition_importance === 'B' ? '◆' : '●'}
+                            </span>
+                          )}
+                          {s.completed ? '✓ ' : ''}{s.title || disc}
                         </span>
-                      )}
-                      {s.completed ? '✓ ' : ''}{s.title || disc}
+                      </div>
                     </div>
                   )
                 })}
@@ -171,6 +213,8 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh }: {
   const [perceivedRpe, setPerceivedRpe] = useState(editSession?.perceived_rpe || 0)
   const [energy, setEnergy] = useState(String(editSession?.energy_level || ''))
   const [importance, setImportance] = useState(editSession?.competition_importance || 'B')
+  const [modalidad, setModalidad] = useState(editSession?.modalidad || '')
+  const [distancia, setDistancia] = useState(editSession?.distancia || '')
   const [completed, setCompleted] = useState(editSession?.completed || false)
   const [loading, setLoading] = useState(false)
 
@@ -208,6 +252,8 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh }: {
         energy_level: energy ? parseInt(energy) : null,
         day_type: type,
         competition_importance: type === 'competition' ? importance : null,
+        modalidad: type === 'competition' ? modalidad : null,
+        distancia: type === 'competition' ? distancia : null,
       })
     }
 
@@ -275,16 +321,31 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh }: {
             </div>
           )}
 
-          {type === 'competition' && !isEdit && (
-            <div>
-              <label className="text-xs text-gray-400 mb-2 block">Importancia</label>
-              <div className="flex gap-3">
-                {['A', 'B', 'C'].map(i => (
-                  <button key={i} onClick={() => setImportance(i)}
-                    className={`flex-1 py-2 rounded-xl text-sm font-bold border transition ${
-                      importance === i ? 'bg-blue-600 border-blue-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-400'
-                    }`}>{i}</button>
-                ))}
+{type === 'competition' && !isEdit && (
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-gray-400 mb-2 block">Modalidad</label>
+                <select className={inputClass} value={modalidad} onChange={e => setModalidad(e.target.value)}>
+                  <option value="">Selecciona</option>
+                  {['Running', 'Bici carretera', 'BTT', 'Triatlón', 'Duatlón', 'OCR', 'Hyrox', 'Natación', 'Paddle surf', 'Ultra trail', 'Otra'].map(m => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 mb-2 block">Distancia / Formato</label>
+                <input className={inputClass} value={distancia} onChange={e => setDistancia(e.target.value)} placeholder="Ej: Maratón, 70.3, 10K, OCR estándar..." />
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 mb-2 block">Importancia</label>
+                <div className="flex gap-3">
+                  {['A', 'B', 'C'].map(i => (
+                    <button key={i} onClick={() => setImportance(i)}
+                      className={`flex-1 py-2 rounded-xl text-sm font-bold border transition ${
+                        importance === i ? 'bg-blue-600 border-blue-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-400'
+                      }`}>{i}</button>
+                  ))}
+                </div>
               </div>
             </div>
           )}

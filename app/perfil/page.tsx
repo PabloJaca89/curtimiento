@@ -1,11 +1,11 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 
 const DISCIPLINES = [
   'Running', 'Bici carretera', 'BTT', 'Spinning',
-  'Natación', 'Paddle surf', 'Fuerza tren superior', 'Fuerza tren inferior'
+  'Natación', 'Paddle surf', 'Fuerza tren superior A', 'Fuerza tren superior B', 'Fuerza tren inferior'
 ]
 
 const EQUIPMENT = [
@@ -14,45 +14,61 @@ const EQUIPMENT = [
 ]
 
 const SHIFT_TYPES = ['Libre', 'Mañanas', 'Tardes', 'Noches', 'Saliente']
-
+const ROTATING_PATTERN = ['M','M','T','T','N','N','S','L','L','L','L','L']
+const SHIFT_LABELS: Record<string, string> = {
+  'M': 'Mañanas', 'T': 'Tardes', 'N': 'Noches', 'S': 'Saliente', 'L': 'Libre'
+}
 const SCHEDULE_TYPES = [
   { id: 'rotating', label: 'Turno rotatorio', desc: '6x6 — MMTTNN + 1 saliente + 5 libres' },
   { id: 'office', label: 'Lunes a viernes', desc: 'Fines de semana libres' }
 ]
 
+function calcularCycleStart(dayIndex: number): string {
+  const today = new Date()
+  const start = new Date(today)
+  start.setDate(today.getDate() - dayIndex)
+  return start.toISOString().split('T')[0]
+}
+
+function calcularCycleDayDesdeStart(cycleStart: string): number | null {
+  if (!cycleStart) return null
+  const start = new Date(cycleStart + 'T12:00:00')
+  const today = new Date()
+  today.setHours(12, 0, 0, 0)
+  const diff = Math.round((today.getTime() - start.getTime()) / 86400000)
+  return ((diff % 12) + 12) % 12
+}
+
 export default function PerfilPage() {
   const router = useRouter()
   const [step, setStep] = useState(1)
   const [loading, setLoading] = useState(false)
+  const [loadingData, setLoadingData] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // Bloque 1
   const [name, setName] = useState('')
   const [age, setAge] = useState('')
   const [sex, setSex] = useState('')
   const [level, setLevel] = useState(0)
   const [injuries, setInjuries] = useState('')
 
-  // Bloque 2
   const [weeklyHours, setWeeklyHours] = useState('')
   const [maxSession, setMaxSession] = useState('')
   const [scheduleType, setScheduleType] = useState('')
-  const [shiftEnergy, setShiftEnergy] = useState({
-    Libre: 5, Mañanas: 2, Tardes: 4, Noches: 3, Saliente: 5
+  const [cycleDay, setCycleDay] = useState<number | null>(null)
+  const [shiftEnergy, setShiftEnergy] = useState<Record<string, number>>({
+    Libre: 5, Mañanas: 2, Tardes: 4, Noches: 3, Saliente: 3
   })
 
-  // Bloque 3
   const [disciplines, setDisciplines] = useState<string[]>([])
   const [priorityDiscipline, setPriorityDiscipline] = useState('')
   const [equipment, setEquipment] = useState<string[]>([])
 
-  // Bloque 4
   const [goal, setGoal] = useState('')
   const [currentFitness, setCurrentFitness] = useState(5)
   const [fromBreak, setFromBreak] = useState(false)
   const [breakWeeks, setBreakWeeks] = useState('')
 
-  // Bloque 5 — rangos
   const [ftp, setFtp] = useState('')
   const [hrZones, setHrZones] = useState({
     z1: { min: '', max: '' }, z2: { min: '', max: '' }, z3: { min: '', max: '' },
@@ -63,12 +79,95 @@ export default function PerfilPage() {
     z4: { min: '', max: '' }, z5: { min: '', max: '' }
   })
 
+  // Cargar datos existentes al montar
+  useEffect(() => {
+    const cargarPerfil = async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) { router.push('/login'); return }
+
+      const { data: p } = await supabase
+        .from('athlete_profiles')
+        .select('*')
+        .eq('id', session.user.id)
+        .single()
+
+      if (p) {
+        setName(p.name || '')
+        setAge(p.age ? String(p.age) : '')
+        setSex(p.sex || '')
+        setLevel(p.level || 0)
+        setInjuries(p.injuries || '')
+        setWeeklyHours(p.weekly_hours ? String(p.weekly_hours) : '')
+        setMaxSession(p.max_session_duration ? String(p.max_session_duration) : '')
+        setGoal(p.general_goal || '')
+        setCurrentFitness(p.current_fitness || 5)
+        setFromBreak(p.coming_from_break || false)
+        setBreakWeeks(p.break_duration_weeks ? String(p.break_duration_weeks) : '')
+        setFtp(p.ftp ? String(p.ftp) : '')
+
+        if (p.disciplines?.list) setDisciplines(p.disciplines.list)
+        if (p.disciplines?.priority) setPriorityDiscipline(p.disciplines.priority)
+        if (p.equipment) setEquipment(p.equipment)
+
+        if (p.heart_rate_zones) setHrZones(p.heart_rate_zones)
+        if (p.running_paces) setRunPaces(p.running_paces)
+
+        if (p.schedule_pattern) {
+          const sp = p.schedule_pattern
+          setScheduleType(sp.type || '')
+          if (sp.shift_energy) {
+            setShiftEnergy({
+              Libre:    sp.shift_energy.L ?? 5,
+              Mañanas:  sp.shift_energy.M ?? 2,
+              Tardes:   sp.shift_energy.T ?? 4,
+              Noches:   sp.shift_energy.N ?? 3,
+              Saliente: sp.shift_energy.S ?? 3,
+            })
+          }
+          if (sp.cycle_start) {
+            const dayIdx = calcularCycleDayDesdeStart(sp.cycle_start)
+            setCycleDay(dayIdx)
+          }
+        }
+      }
+      setLoadingData(false)
+    }
+    cargarPerfil()
+  }, [])
+
   const toggleItem = (list: string[], setList: (v: string[]) => void, item: string) => {
     setList(list.includes(item) ? list.filter(i => i !== item) : [...list, item])
   }
 
   const updateShiftEnergy = (shift: string, value: number) => {
     setShiftEnergy(prev => ({ ...prev, [shift]: value }))
+  }
+
+  const buildSchedulePattern = () => {
+    if (scheduleType === 'rotating' && cycleDay !== null) {
+      return {
+        type: 'rotating',
+        cycle_start: calcularCycleStart(cycleDay),
+        pattern: ROTATING_PATTERN,
+        shift_energy: {
+          M: shiftEnergy['Mañanas'],
+          T: shiftEnergy['Tardes'],
+          N: shiftEnergy['Noches'],
+          S: shiftEnergy['Saliente'],
+          L: shiftEnergy['Libre'],
+        }
+      }
+    }
+    return {
+      type: scheduleType,
+      shift_energy: {
+        M: shiftEnergy['Mañanas'],
+        T: shiftEnergy['Tardes'],
+        N: shiftEnergy['Noches'],
+        S: shiftEnergy['Saliente'],
+        L: shiftEnergy['Libre'],
+      }
+    }
   }
 
   const handleSubmit = async () => {
@@ -82,7 +181,7 @@ export default function PerfilPage() {
       name, age: parseInt(age), sex, level, injuries,
       weekly_hours: parseFloat(weeklyHours),
       max_session_duration: parseInt(maxSession),
-      schedule_pattern: { type: scheduleType, shift_energy: shiftEnergy },
+      schedule_pattern: buildSchedulePattern(),
       disciplines: { list: disciplines, priority: priorityDiscipline },
       equipment,
       general_goal: goal,
@@ -96,7 +195,7 @@ export default function PerfilPage() {
     })
 
     if (error) { setError(error.message); setLoading(false); return }
-    router.push('/dashboard')
+    router.push('/calendario')
   }
 
   const inputClass = "w-full bg-gray-800 text-white rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
@@ -106,20 +205,32 @@ export default function PerfilPage() {
       ? 'bg-blue-600 border-blue-600 text-white'
       : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-blue-500'}`
 
+  if (loadingData) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+        <div className="text-gray-400">Cargando perfil...</div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-gray-950 text-white p-6">
       <div className="max-w-2xl mx-auto">
-        <h1 className="text-2xl font-bold tracking-widest mb-2">CURTIMIENTO</h1>
+        <div className="flex items-center gap-4 mb-2">
+          <h1 className="text-2xl font-bold tracking-widest">CURTIMIENTO</h1>
+          <a href="/calendario" className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
+            ← Calendario
+          </a>
+        </div>
         <p className="text-gray-400 mb-6">Configura tu perfil de atleta</p>
 
-        {/* Progreso */}
         <div className="flex gap-2 mb-8">
           {[1,2,3,4,5].map(s => (
             <div key={s} className={`h-1 flex-1 rounded-full ${step >= s ? 'bg-blue-500' : 'bg-gray-800'}`} />
           ))}
         </div>
 
-        {/* BLOQUE 1 — Datos personales */}
+        {/* BLOQUE 1 */}
         {step === 1 && (
           <div className="space-y-5">
             <h2 className="text-lg font-semibold text-blue-400">Datos personales</h2>
@@ -161,7 +272,7 @@ export default function PerfilPage() {
           </div>
         )}
 
-        {/* BLOQUE 2 — Disponibilidad */}
+        {/* BLOQUE 2 */}
         {step === 2 && (
           <div className="space-y-5">
             <h2 className="text-lg font-semibold text-blue-400">Disponibilidad</h2>
@@ -182,15 +293,37 @@ export default function PerfilPage() {
                 {SCHEDULE_TYPES.map(st => (
                   <button key={st.id} onClick={() => setScheduleType(st.id)}
                     className={`flex flex-col items-start px-4 py-3 rounded-xl border transition text-left ${
-                      scheduleType === st.id
-                        ? 'bg-blue-600 border-blue-600'
-                        : 'bg-gray-800 border-gray-700 hover:border-blue-500'}`}>
+                      scheduleType === st.id ? 'bg-blue-600 border-blue-600' : 'bg-gray-800 border-gray-700 hover:border-blue-500'}`}>
                     <span className="font-medium text-sm">{st.label}</span>
                     <span className="text-xs text-gray-300 mt-0.5">{st.desc}</span>
                   </button>
                 ))}
               </div>
             </div>
+
+            {scheduleType === 'rotating' && (
+              <div>
+                <label className={labelClass}>¿En qué día del ciclo estás hoy?</label>
+                <p className="text-xs text-gray-500 mb-3">El patrón es MMTTNNSLLLLL. Selecciona el turno de hoy.</p>
+                <div className="grid grid-cols-12 gap-1">
+                  {ROTATING_PATTERN.map((shift, idx) => (
+                    <button key={idx} onClick={() => setCycleDay(idx)}
+                      className={`flex flex-col items-center py-2 px-1 rounded-lg border text-xs transition ${
+                        cycleDay === idx
+                          ? 'bg-blue-600 border-blue-600 text-white'
+                          : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-blue-500'}`}>
+                      <span className="font-bold">{shift}</span>
+                      <span className="text-gray-500 text-xs">{idx + 1}</span>
+                    </button>
+                  ))}
+                </div>
+                {cycleDay !== null && (
+                  <p className="text-xs text-blue-400 mt-2">
+                    Hoy: día {cycleDay + 1} del ciclo — {SHIFT_LABELS[ROTATING_PATTERN[cycleDay]]}
+                  </p>
+                )}
+              </div>
+            )}
 
             <div>
               <label className={labelClass}>Energía disponible por tipo de jornada</label>
@@ -202,9 +335,7 @@ export default function PerfilPage() {
                       {[1,2,3,4,5].map(v => (
                         <button key={v} onClick={() => updateShiftEnergy(shift, v)}
                           className={`w-8 h-8 rounded-lg text-sm font-medium transition ${
-                            (shiftEnergy as any)[shift] === v
-                              ? 'bg-blue-600 text-white'
-                              : 'bg-gray-700 text-gray-400 hover:bg-gray-600'}`}>{v}</button>
+                            shiftEnergy[shift] === v ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600'}`}>{v}</button>
                       ))}
                     </div>
                   </div>
@@ -214,7 +345,7 @@ export default function PerfilPage() {
           </div>
         )}
 
-        {/* BLOQUE 3 — Disciplinas */}
+        {/* BLOQUE 3 */}
         {step === 3 && (
           <div className="space-y-5">
             <h2 className="text-lg font-semibold text-blue-400">Disciplinas y equipamiento</h2>
@@ -248,7 +379,7 @@ export default function PerfilPage() {
           </div>
         )}
 
-        {/* BLOQUE 4 — Objetivos */}
+        {/* BLOQUE 4 */}
         {step === 4 && (
           <div className="space-y-5">
             <h2 className="text-lg font-semibold text-blue-400">Objetivos y estado actual</h2>
@@ -288,7 +419,7 @@ export default function PerfilPage() {
           </div>
         )}
 
-        {/* BLOQUE 5 — Parámetros */}
+        {/* BLOQUE 5 */}
         {step === 5 && (
           <div className="space-y-5">
             <h2 className="text-lg font-semibold text-blue-400">
@@ -304,13 +435,11 @@ export default function PerfilPage() {
                 {(['z1','z2','z3','z4','z5'] as const).map((z, i) => (
                   <div key={z} className="flex items-center gap-3 bg-gray-800 rounded-xl px-4 py-3">
                     <span className="text-sm text-gray-400 w-8">Z{i+1}</span>
-                    <input
-                      className="flex-1 bg-gray-700 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-blue-500"
+                    <input className="flex-1 bg-gray-700 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-blue-500"
                       value={hrZones[z].min} onChange={e => setHrZones({...hrZones, [z]: {...hrZones[z], min: e.target.value}})}
                       placeholder="mín ppm" />
                     <span className="text-gray-500 text-sm">→</span>
-                    <input
-                      className="flex-1 bg-gray-700 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-blue-500"
+                    <input className="flex-1 bg-gray-700 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-blue-500"
                       value={hrZones[z].max} onChange={e => setHrZones({...hrZones, [z]: {...hrZones[z], max: e.target.value}})}
                       placeholder="máx ppm" />
                   </div>
@@ -323,13 +452,11 @@ export default function PerfilPage() {
                 {(['z1','z2','z3','z4','z5'] as const).map((z, i) => (
                   <div key={z} className="flex items-center gap-3 bg-gray-800 rounded-xl px-4 py-3">
                     <span className="text-sm text-gray-400 w-8">Z{i+1}</span>
-                    <input
-                      className="flex-1 bg-gray-700 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-blue-500"
+                    <input className="flex-1 bg-gray-700 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-blue-500"
                       value={runPaces[z].min} onChange={e => setRunPaces({...runPaces, [z]: {...runPaces[z], min: e.target.value}})}
                       placeholder="lento" />
                     <span className="text-gray-500 text-sm">→</span>
-                    <input
-                      className="flex-1 bg-gray-700 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-blue-500"
+                    <input className="flex-1 bg-gray-700 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-blue-500"
                       value={runPaces[z].max} onChange={e => setRunPaces({...runPaces, [z]: {...runPaces[z], max: e.target.value}})}
                       placeholder="rápido" />
                   </div>
@@ -341,7 +468,6 @@ export default function PerfilPage() {
 
         {error && <p className="text-red-400 text-sm mt-4">{error}</p>}
 
-        {/* Navegación */}
         <div className="flex justify-between mt-8">
           {step > 1 ? (
             <button onClick={() => setStep(step - 1)}

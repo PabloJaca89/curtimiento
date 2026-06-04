@@ -1,81 +1,114 @@
 'use client'
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 
 const DAY_NAMES = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
 
 const DISCIPLINE_COLORS: Record<string, { bg: string; text: string }> = {
-  'Running':               { bg: 'bg-blue-900',   text: 'text-blue-300' },
-  'Bici carretera':        { bg: 'bg-green-900',  text: 'text-green-300' },
-  'BTT':                   { bg: 'bg-lime-900',   text: 'text-lime-300' },
-  'Spinning':              { bg: 'bg-teal-900',   text: 'text-teal-300' },
-  'Natación':              { bg: 'bg-purple-900', text: 'text-purple-300' },
-  'Paddle surf':           { bg: 'bg-cyan-900',   text: 'text-cyan-300' },
-  'Fuerza tren superior A':{ bg: 'bg-orange-900', text: 'text-orange-300' },
-  'Fuerza tren superior B':{ bg: 'bg-orange-900', text: 'text-orange-300' },
-  'Fuerza tren inferior':  { bg: 'bg-yellow-900', text: 'text-yellow-300' },
-  'Descanso':              { bg: 'bg-gray-800',   text: 'text-gray-500' },
-  'Compromiso':            { bg: 'bg-orange-900', text: 'text-orange-400' },
-  'Competición':           { bg: 'bg-red-900',    text: 'text-red-400' },
+  'Running':                { bg: 'bg-blue-900',   text: 'text-blue-300' },
+  'Bici carretera':         { bg: 'bg-green-900',  text: 'text-green-300' },
+  'BTT':                    { bg: 'bg-lime-900',   text: 'text-lime-300' },
+  'Spinning':               { bg: 'bg-teal-900',   text: 'text-teal-300' },
+  'Natación':               { bg: 'bg-purple-900', text: 'text-purple-300' },
+  'Paddle surf':            { bg: 'bg-cyan-900',   text: 'text-cyan-300' },
+  'Fuerza tren superior A': { bg: 'bg-orange-900', text: 'text-orange-300' },
+  'Fuerza tren superior B': { bg: 'bg-orange-900', text: 'text-orange-300' },
+  'Fuerza tren inferior':   { bg: 'bg-yellow-900', text: 'text-yellow-300' },
+  'Descanso':               { bg: 'bg-gray-800',   text: 'text-gray-500' },
+  'Compromiso':             { bg: 'bg-orange-900', text: 'text-orange-400' },
+  'Competición':            { bg: 'bg-red-900',    text: 'text-red-400' },
 }
 
 const ZONE_COLORS: Record<number, string> = {
-  1: 'bg-sky-400',
-  2: 'bg-green-400',
-  3: 'bg-yellow-400',
-  4: 'bg-orange-400',
-  5: 'bg-red-500',
+  1: 'bg-sky-400', 2: 'bg-green-400', 3: 'bg-yellow-400',
+  4: 'bg-orange-400', 5: 'bg-red-500',
 }
 
 const DISCIPLINE_ICONS: Record<string, string> = {
-  'Running':                '🏃',
-  'Bici carretera':         '🚴',
-  'BTT':                    '🚵',
-  'Spinning':               '⚡',
-  'Natación':               '🏊',
-  'Paddle surf':            '🏄',
-  'Fuerza tren superior A': '💪',
-  'Fuerza tren superior B': '💪',
-  'Fuerza tren inferior':   '🦵',
-  'Descanso':               '😴',
-  'Compromiso':             '📅',
-  'Competición':            '🏁',
+  'Running': '🏃', 'Bici carretera': '🚴', 'BTT': '🚵', 'Spinning': '⚡',
+  'Natación': '🏊', 'Paddle surf': '🏄', 'Fuerza tren superior A': '💪',
+  'Fuerza tren superior B': '💪', 'Fuerza tren inferior': '🦵',
+  'Descanso': '😴', 'Compromiso': '📅', 'Competición': '🏁',
+}
+
+const SHIFT_STYLES: Record<string, { label: string; bg: string; text: string }> = {
+  'M': { label: 'M', bg: 'bg-blue-300/20',   text: 'text-blue-300' },
+  'T': { label: 'T', bg: 'bg-blue-500/20',   text: 'text-blue-400' },
+  'N': { label: 'N', bg: 'bg-blue-800/30',   text: 'text-blue-200' },
+  'S': { label: 'S', bg: 'bg-yellow-900/30', text: 'text-yellow-600' },
+  'L': { label: 'L', bg: 'bg-yellow-900/10', text: 'text-yellow-700' },
+}
+
+function calcularTurno(dateStr: string, schedulePattern: any): string | null {
+  if (!schedulePattern?.cycle_start || !schedulePattern?.pattern) return null
+  const start = new Date(schedulePattern.cycle_start + 'T12:00:00')
+  const date = new Date(dateStr + 'T12:00:00')
+  const diffDays = Math.round((date.getTime() - start.getTime()) / (1000 * 60 * 60 * 24))
+  const pattern: string[] = schedulePattern.pattern
+  const idx = ((diffDays % pattern.length) + pattern.length) % pattern.length
+  return pattern[idx]
+}
+
+function normalizarDisc(raw: string, dayType?: string): string {
+  if (!raw) return 'Descanso'
+  const d = raw.toLowerCase().trim()
+  if (d === 'competition' || dayType === 'competition') return 'Competición'
+  if (d === 'compromise' || dayType === 'compromise') return 'Compromiso'
+  if (d === 'rest' || dayType === 'rest') return 'Descanso'
+  if (d.includes('superior') && d.includes('a')) return 'Fuerza tren superior A'
+  if (d.includes('superior') && d.includes('b')) return 'Fuerza tren superior B'
+  if (d.includes('superior')) return 'Fuerza tren superior A'
+  if (d.includes('inferior')) return 'Fuerza tren inferior'
+  const map: Record<string, string> = {
+    'running': 'Running', 'carrera': 'Running',
+    'bici carretera': 'Bici carretera', 'ciclismo': 'Bici carretera', 'bici': 'Bici carretera',
+    'btt': 'BTT', 'mtb': 'BTT', 'spinning': 'Spinning',
+    'natación': 'Natación', 'natacion': 'Natación',
+    'paddle surf': 'Paddle surf', 'paddle': 'Paddle surf',
+    'descanso': 'Descanso', 'rest': 'Descanso',
+    'compromiso': 'Compromiso', 'competición': 'Competición', 'competicion': 'Competición',
+  }
+  return map[d] || raw
+}
+
+function aplicarCorrector(texto: string, corrector: number): string {
+  if (!texto || corrector === 0) return texto
+  let result = texto.replace(/(\d+)-(\d+)\s*w/gi, (_m: string, a: string, b: string) =>
+    `${Math.round(parseInt(a) * (1 - corrector))}-${Math.round(parseInt(b) * (1 - corrector))}w`)
+  result = result.replace(/(\d+)[':'](\d{2})['"']/g, (_m: string, min: string, sec: string) => {
+    const totalSecs = parseInt(min) * 60 + parseInt(sec)
+    const adjusted = Math.round(totalSecs / (1 - corrector))
+    return `${Math.floor(adjusted / 60)}'${String(adjusted % 60).padStart(2, '0')}''`
+  })
+  return result
 }
 
 interface Session {
-  id: string
-  date: string
-  type: string
-  discipline?: string
-  title?: string
-  energy_level?: number
-  rpe?: number
-  perceived_rpe?: number
-  planned_zone?: number
-  planned_duration?: number
-  actual_duration?: number
-  completed?: boolean
-  competition_importance?: string
-  day_type?: string
-  planned_load?: number
-  modalidad?: string
-  distancia?: string
+  id: string; date: string; type: string; discipline?: string; title?: string
+  description?: string; energy_level?: number; rpe?: number; perceived_rpe?: number
+  planned_zone?: number; planned_duration?: number; actual_duration?: number
+  completed?: boolean; competition_importance?: string; day_type?: string
+  planned_load?: number; modalidad?: string; distancia?: string
 }
 
 interface Props {
-  currentDate: Date
-  sessions: Session[]
-  onRefresh: () => void
+  currentDate: Date; sessions: Session[]; onRefresh: () => void; schedulePattern?: any
 }
 
 function toDateStr(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
-export default function CalendarMonth({ currentDate, sessions, onRefresh }: Props) {
+export default function CalendarMonth({ currentDate, sessions, onRefresh, schedulePattern }: Props) {
   const [showModal, setShowModal] = useState(false)
   const [modalDate, setModalDate] = useState<string>('')
   const [modalSession, setModalSession] = useState<Session | null>(null)
+
+  // Drag & drop state
+  const [dragSession, setDragSession] = useState<Session | null>(null)
+  const [dragOver, setDragOver] = useState<string | null>(null)
+  const [showMoveModal, setShowMoveModal] = useState(false)
+  const [moveTarget, setMoveTarget] = useState<string | null>(null)
 
   const year = currentDate.getFullYear()
   const month = currentDate.getMonth()
@@ -91,9 +124,7 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh }: Prop
   while (days.length % 7 !== 0) days.push(null)
 
   const today = toDateStr(new Date())
-
-  const getSessionsForDay = (date: Date) =>
-    sessions.filter(s => s.date === toDateStr(date))
+  const getSessionsForDay = (date: Date) => sessions.filter(s => s.date === toDateStr(date))
 
   const handleDayClick = (date: Date) => {
     setModalDate(toDateStr(date))
@@ -107,6 +138,53 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh }: Prop
     setModalSession(session)
     setShowModal(true)
   }
+
+  // ─── DRAG & DROP ────────────────────────────────────────────────────────────
+  const handleDragStart = (e: React.DragEvent, session: Session) => {
+    e.stopPropagation()
+    setDragSession(session)
+    e.dataTransfer.effectAllowed = 'move'
+  }
+
+  const handleDragOver = (e: React.DragEvent, dateStr: string) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDragOver(dateStr)
+  }
+
+  const handleDragLeave = () => setDragOver(null)
+
+  const handleDrop = (e: React.DragEvent, dateStr: string) => {
+    e.preventDefault()
+    setDragOver(null)
+    if (!dragSession || dateStr === dragSession.date) { setDragSession(null); return }
+    setMoveTarget(dateStr)
+    setShowMoveModal(true)
+  }
+
+  const handleMoverSesion = async (modo: 'mover' | 'intercambiar') => {
+    if (!dragSession || !moveTarget) return
+    setShowMoveModal(false)
+
+    const sesionesDestino = sessions.filter(s => s.date === moveTarget && s.day_type !== 'competition')
+
+    if (modo === 'mover') {
+      // Mover sesión al nuevo día
+      await supabase.from('sessions').update({ date: moveTarget }).eq('id', dragSession.id)
+    } else if (modo === 'intercambiar') {
+      // Intercambiar: sesión origen va al destino, sesiones destino van al origen
+      await supabase.from('sessions').update({ date: moveTarget }).eq('id', dragSession.id)
+      for (const s of sesionesDestino) {
+        await supabase.from('sessions').update({ date: dragSession.date }).eq('id', s.id)
+      }
+    }
+
+    setDragSession(null)
+    setMoveTarget(null)
+    onRefresh()
+  }
+
+  const sesionesEnDestino = moveTarget ? sessions.filter(s => s.date === moveTarget && s.day_type !== 'competition') : []
 
   return (
     <>
@@ -123,38 +201,52 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh }: Prop
           const daySessions = getSessionsForDay(day)
           const isToday = dateStr === today
           const isPast = dateStr < today
+          const turno = calcularTurno(dateStr, schedulePattern)
+          const turnoStyle = turno ? SHIFT_STYLES[turno] : null
+          const isDragOver = dragOver === dateStr
 
           return (
-            <div key={idx} onClick={() => handleDayClick(day)}
-              className={`min-h-[80px] bg-gray-900 rounded-xl p-2 border cursor-pointer hover:border-blue-500 transition
-                ${isToday ? 'border-blue-500' : 'border-gray-800'}
-                ${isPast && !isToday ? 'opacity-70' : ''}`}>
-              <div className={`text-xs font-medium mb-1 ${isToday ? 'text-blue-400' : 'text-gray-500'}`}>
-                {day.getDate()}
+            <div key={idx}
+              onClick={() => handleDayClick(day)}
+              onDragOver={e => handleDragOver(e, dateStr)}
+              onDragLeave={handleDragLeave}
+              onDrop={e => handleDrop(e, dateStr)}
+              className={`min-h-[80px] bg-gray-900 rounded-xl p-2 border cursor-pointer transition
+                ${isToday ? 'border-blue-500' : isDragOver ? 'border-purple-400 bg-purple-900/20' : 'border-gray-800'}
+                ${isPast && !isToday ? 'opacity-70' : ''}
+                hover:border-blue-500`}>
+              <div className="flex items-center justify-between mb-1">
+                <div className={`text-xs font-medium ${isToday ? 'text-blue-400' : 'text-gray-500'}`}>
+                  {day.getDate()}
+                </div>
+                {turnoStyle && (
+                  <span className={`text-xs font-bold px-1 rounded ${turnoStyle.bg} ${turnoStyle.text}`}>
+                    {turnoStyle.label}
+                  </span>
+                )}
               </div>
               <div className="space-y-1">
                 {daySessions.map(s => {
-                  const disc = s.discipline || s.type
-                  const discNorm = disc.includes('superior') ? (disc.includes('A') ? 'Fuerza tren superior A' : 'Fuerza tren superior B') : disc.includes('inferior') ? 'Fuerza tren inferior' : disc
-                  const colors = DISCIPLINE_COLORS[discNorm] || { bg: 'bg-gray-800', text: 'text-gray-400' }
-                  const isComp = s.day_type === 'competition'
-      return (
-                    <div key={s.id} onClick={e => handleSessionClick(e, s)}
+                  const disc = normalizarDisc(s.discipline || s.type, s.day_type)
+                  const colors = DISCIPLINE_COLORS[disc] || { bg: 'bg-gray-800', text: 'text-gray-400' }
+                  const isComp = s.day_type === 'competition' || disc === 'Competición'
+                  return (
+                    <div key={s.id}
+                      draggable={!isComp}
+                      onDragStart={e => !isComp && handleDragStart(e, s)}
+                      onClick={e => handleSessionClick(e, s)}
                       className={`text-xs px-1.5 py-1 rounded-md ${colors.bg} ${colors.text} truncate
-                        ${isComp ? 'border border-red-500' : ''}
-                        ${s.completed ? 'opacity-60' : ''}`}>
+                        ${isComp ? 'border border-red-500' : 'cursor-grab active:cursor-grabbing'}
+                        ${s.completed ? 'opacity-60' : ''}
+                        ${dragSession?.id === s.id ? 'opacity-40' : ''}`}>
                       <div className="flex items-center gap-1">
-                        {/* Icono disciplina */}
-                        <span className="text-xs">{DISCIPLINE_ICONS[discNorm] || '📋'}</span>
-                        {/* Zona (circulito de color) */}
+                        <span className="text-xs">{DISCIPLINE_ICONS[disc] || '📋'}</span>
                         {s.planned_zone && ZONE_COLORS[s.planned_zone] && (
                           <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${ZONE_COLORS[s.planned_zone]}`} />
                         )}
-                        {/* RPE estimada */}
                         {s.planned_load && (
                           <span className="text-xs opacity-60 font-mono">{s.planned_load}</span>
                         )}
-                        {/* Título */}
                         <span className="truncate">
                           {isComp && s.competition_importance && (
                             <span className="mr-0.5">
@@ -181,6 +273,7 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh }: Prop
         })}
       </div>
 
+      {/* Modal sesión */}
       {showModal && (
         <DayModal
           date={modalDate}
@@ -190,16 +283,47 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh }: Prop
           onRefresh={() => { onRefresh(); setShowModal(false) }}
         />
       )}
+
+      {/* Modal mover/intercambiar */}
+      {showMoveModal && dragSession && moveTarget && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 rounded-2xl w-full max-w-sm border border-gray-800 p-6">
+            <h3 className="font-semibold text-lg mb-2">Mover sesión</h3>
+            <p className="text-gray-400 text-sm mb-1">
+              <span className="text-white">{dragSession.title || dragSession.discipline}</span>
+              {' '}→ {new Date(moveTarget + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'long' })}
+            </p>
+            {sesionesEnDestino.length > 0 && (
+              <p className="text-xs text-gray-500 mb-4">
+                El día destino ya tiene: {sesionesEnDestino.map(s => s.title || s.discipline).join(', ')}
+              </p>
+            )}
+            <div className="flex flex-col gap-3 mt-4">
+              <button onClick={() => handleMoverSesion('mover')}
+                className="w-full bg-blue-600 hover:bg-blue-700 py-3 rounded-xl text-sm font-medium transition">
+                Mover aquí {sesionesEnDestino.length > 0 ? '(se solapan)' : ''}
+              </button>
+              {sesionesEnDestino.length > 0 && (
+                <button onClick={() => handleMoverSesion('intercambiar')}
+                  className="w-full bg-purple-600 hover:bg-purple-700 py-3 rounded-xl text-sm font-medium transition">
+                  Intercambiar sesiones
+                </button>
+              )}
+              <button onClick={() => { setShowMoveModal(false); setDragSession(null); setMoveTarget(null) }}
+                className="w-full bg-gray-800 hover:bg-gray-700 py-3 rounded-xl text-sm transition">
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }
 
 function DayModal({ date, sessions, editSession, onClose, onRefresh }: {
-  date: string
-  sessions: Session[]
-  editSession: Session | null
-  onClose: () => void
-  onRefresh: () => void
+  date: string; sessions: Session[]; editSession: Session | null
+  onClose: () => void; onRefresh: () => void
 }) {
   const isEdit = !!editSession
   const isPast = date < toDateStr(new Date())
@@ -217,10 +341,17 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh }: {
   const [distancia, setDistancia] = useState(editSession?.distancia || '')
   const [completed, setCompleted] = useState(editSession?.completed || false)
   const [loading, setLoading] = useState(false)
+  const [correctorCalorAmarillo, setCorrectorCalorAmarillo] = useState(false)
+  const [correctorCalorRojo, setCorrectorCalorRojo] = useState(false)
+  const [correctorEnfAmarillo, setCorrectorEnfAmarillo] = useState(false)
+  const [correctorEnfRojo, setCorrectorEnfRojo] = useState(false)
+
+  const correctorTotal = (correctorCalorAmarillo ? 0.07 : 0) + (correctorCalorRojo ? 0.15 : 0) +
+    (correctorEnfAmarillo ? 0.07 : 0) + (correctorEnfRojo ? 0.15 : 0)
 
   const DISCIPLINES = [
-    'Running', 'Bici carretera', 'BTT', 'Spinning',
-    'Natación', 'Paddle surf', 'Fuerza tren superior', 'Fuerza tren inferior'
+    'Running', 'Bici carretera', 'BTT', 'Spinning', 'Natación', 'Paddle surf',
+    'Fuerza tren superior A', 'Fuerza tren superior B', 'Fuerza tren inferior'
   ]
 
   const handleSave = async () => {
@@ -230,33 +361,24 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh }: {
 
     if (isEdit) {
       await supabase.from('sessions').update({
-        title: title || null,
-        planned_duration: plannedDuration ? parseInt(plannedDuration) : null,
+        title: title || null, planned_duration: plannedDuration ? parseInt(plannedDuration) : null,
         actual_duration: actualDuration ? parseInt(actualDuration) : null,
-        planned_zone: plannedZone || null,
-        perceived_rpe: perceivedRpe || null,
-        energy_level: energy ? parseInt(energy) : null,
-        completed,
+        planned_zone: plannedZone || null, perceived_rpe: perceivedRpe || null,
+        energy_level: energy ? parseInt(energy) : null, completed,
       }).eq('id', editSession!.id)
     } else {
       await supabase.from('sessions').insert({
-        user_id: session.user.id,
-        date,
-        type,
+        user_id: session.user.id, date, type,
         discipline: type === 'training' ? discipline : type,
-        title: title || null,
-        planned_duration: plannedDuration ? parseInt(plannedDuration) : null,
+        title: title || null, planned_duration: plannedDuration ? parseInt(plannedDuration) : null,
         actual_duration: actualDuration ? parseInt(actualDuration) : null,
-        planned_zone: plannedZone || null,
-        perceived_rpe: perceivedRpe || null,
-        energy_level: energy ? parseInt(energy) : null,
-        day_type: type,
+        planned_zone: plannedZone || null, perceived_rpe: perceivedRpe || null,
+        energy_level: energy ? parseInt(energy) : null, day_type: type,
         competition_importance: type === 'competition' ? importance : null,
         modalidad: type === 'competition' ? modalidad : null,
         distancia: type === 'competition' ? distancia : null,
       })
     }
-
     setLoading(false)
     onRefresh()
   }
@@ -281,10 +403,11 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh }: {
           {!isEdit && sessions.length > 0 && (
             <div className="space-y-2">
               {sessions.map(s => {
-                const colors = DISCIPLINE_COLORS[s.discipline || s.type] || { bg: 'bg-gray-800', text: 'text-gray-400' }
+                const disc = normalizarDisc(s.discipline || s.type, s.day_type)
+                const colors = DISCIPLINE_COLORS[disc] || { bg: 'bg-gray-800', text: 'text-gray-400' }
                 return (
                   <div key={s.id} className={`flex justify-between items-center px-3 py-2 rounded-xl ${colors.bg}`}>
-                    <span className={`text-sm ${colors.text}`}>{s.title || s.discipline || s.type}</span>
+                    <span className={`text-sm ${colors.text}`}>{s.title || disc}</span>
                     <button onClick={() => handleDelete(s.id)} className="text-gray-500 hover:text-red-400 text-xs transition">✕</button>
                   </div>
                 )
@@ -297,10 +420,8 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh }: {
               <label className="text-xs text-gray-400 mb-2 block">Tipo de día</label>
               <div className="grid grid-cols-4 gap-2">
                 {[
-                  { id: 'training', label: 'Entreno' },
-                  { id: 'rest', label: 'Descanso' },
-                  { id: 'competition', label: 'Competición' },
-                  { id: 'compromise', label: 'Compromiso' },
+                  { id: 'training', label: 'Entreno' }, { id: 'rest', label: 'Descanso' },
+                  { id: 'competition', label: 'Competición' }, { id: 'compromise', label: 'Compromiso' },
                 ].map(t => (
                   <button key={t.id} onClick={() => setType(t.id)}
                     className={`py-2 rounded-xl text-xs font-medium border transition ${
@@ -321,7 +442,7 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh }: {
             </div>
           )}
 
-{type === 'competition' && !isEdit && (
+          {type === 'competition' && !isEdit && (
             <div className="space-y-3">
               <div>
                 <label className="text-xs text-gray-400 mb-2 block">Modalidad</label>
@@ -354,6 +475,46 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh }: {
             <div>
               <label className="text-xs text-gray-400 mb-2 block">Título (opcional)</label>
               <input className={inputClass} value={title} onChange={e => setTitle(e.target.value)} placeholder="Ej: Rodaje Z2 45min" />
+            </div>
+          )}
+
+          {isEdit && editSession?.planned_load && (
+            <div className="flex items-center justify-between bg-gray-800 rounded-xl px-4 py-3">
+              <span className="text-sm text-gray-300">Esfuerzo previsto por la app</span>
+              <div className="flex items-center gap-2">
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold ${
+                  editSession.planned_load >= 8 ? 'bg-red-900 text-red-300' :
+                  editSession.planned_load >= 5 ? 'bg-yellow-900 text-yellow-300' : 'bg-green-900 text-green-300'
+                }`}>{editSession.planned_load}</div>
+                <span className="text-xs text-gray-500">/ 10</span>
+              </div>
+            </div>
+          )}
+
+          {isEdit && editSession?.planned_zone && (
+            <div className="bg-gray-800 rounded-xl px-4 py-3 space-y-3">
+              {editSession.description && (
+                <div className="text-xs text-gray-300 leading-relaxed">
+                  {aplicarCorrector(editSession.description, correctorTotal)}
+                </div>
+              )}
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-gray-400">Corrector de condiciones</span>
+                {correctorTotal > 0 && <span className="text-xs text-yellow-400 font-medium">-{Math.round(correctorTotal * 100)}%</span>}
+              </div>
+              <div className="flex gap-2">
+                {[
+                  { state: correctorCalorAmarillo, set: setCorrectorCalorAmarillo, icon: '🌤️', title: 'Calor moderado (-7%)', active: 'bg-yellow-600 border-yellow-600' },
+                  { state: correctorCalorRojo, set: setCorrectorCalorRojo, icon: '☀️', title: 'Calor extremo (-15%)', active: 'bg-orange-600 border-orange-600' },
+                  { state: correctorEnfAmarillo, set: setCorrectorEnfAmarillo, icon: '🤒', title: 'Enfermedad leve (-7%)', active: 'bg-yellow-600 border-yellow-600' },
+                  { state: correctorEnfRojo, set: setCorrectorEnfRojo, icon: '🤧', title: 'Enfermedad grave (-15%)', active: 'bg-red-600 border-red-600' },
+                ].map((btn, i) => (
+                  <button key={i} onClick={() => btn.set(!btn.state)} title={btn.title}
+                    className={`flex-1 py-2 rounded-xl text-sm border transition ${btn.state ? btn.active : 'bg-gray-700 border-gray-600'}`}>
+                    {btn.icon}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 

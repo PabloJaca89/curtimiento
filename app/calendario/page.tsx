@@ -16,8 +16,9 @@ export default function CalendarioPage() {
   const [planGenerado, setPlanGenerado] = useState(false)
   const [generando, setGenerando] = useState(false)
   const [showConfirmRecalc, setShowConfirmRecalc] = useState(false)
+  const [showModalPlan, setShowModalPlan] = useState(false)
+  const [instruccionesLibres, setInstruccionesLibres] = useState('')
 
-  // Chat asistente
   const [chatAbierto, setChatAbierto] = useState(false)
   const [mensajesChat, setMensajesChat] = useState<{ role: string; content: string }[]>([
     { role: 'assistant', content: '¡Hola! Soy tu asistente de entrenamiento. Puedo ayudarte a ajustar tu plan, responder dudas o hacer cambios. ¿En qué te ayudo?' }
@@ -45,10 +46,11 @@ export default function CalendarioPage() {
       .single()
     setPerfil(p)
 
-    const { data: haySesiones } = await supabase
+const { data: haySesiones } = await supabase
       .from('sessions')
       .select('id')
       .eq('user_id', session.user.id)
+      .neq('day_type', 'competition')
       .limit(1)
     setPlanGenerado(!!(haySesiones && haySesiones.length > 0))
 
@@ -71,27 +73,30 @@ export default function CalendarioPage() {
   const handleGenerarPlan = async () => {
     if (!perfil) return
     setGenerando(true)
-
     try {
       const hoy = new Date().toISOString().split('T')[0]
       const fin = new Date()
-      fin.setFullYear(fin.getFullYear() + 1)
+      fin.setMonth(fin.getMonth() + 3)
       const fechaFin = fin.toISOString().split('T')[0]
 
       const { data: competiciones } = await supabase
-        .from('sessions')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('day_type', 'competition')
+        .from('sessions').select('*')
+        .eq('user_id', userId).eq('day_type', 'competition')
 
-      const resultado = await generarPlanAction(perfil, competiciones || [], hoy, fechaFin)
+      const resultado = await generarPlanAction(perfil, competiciones || [], hoy, fechaFin, instruccionesLibres)
 
-      if (resultado?.sesiones) {
-        const nuevasSesiones = resultado.sesiones.map((s: any) => ({
-          ...s,
-          user_id: userId,
-          type: s.day_type || 'training',
-        }))
+     if (resultado?.sesiones) {
+        // No sobreescribir días que ya tienen competición
+        const fechasConCompeticion = new Set(
+          (competiciones || []).map((c: any) => c.date)
+        )
+        const nuevasSesiones = resultado.sesiones
+          .filter((s: any) => !fechasConCompeticion.has(s.date))
+          .map((s: any) => ({
+            ...s,
+            user_id: userId,
+            type: s.day_type || 'training',
+          }))
         await supabase.from('sessions').insert(nuevasSesiones)
         setPlanGenerado(true)
         await fetchData()
@@ -99,49 +104,35 @@ export default function CalendarioPage() {
     } catch (err) {
       console.error('Error generando plan:', err)
     }
-
     setGenerando(false)
   }
 
   const handleRecalcular = async () => {
     setShowConfirmRecalc(false)
     setGenerando(true)
-
     try {
       const hoy = new Date().toISOString().split('T')[0]
 
       const { data: todasSesiones } = await supabase
-        .from('sessions')
-        .select('*')
-        .eq('user_id', userId)
-        .gte('date', hoy)
+        .from('sessions').select('*')
+        .eq('user_id', userId).gte('date', hoy)
 
       const { data: competiciones } = await supabase
-        .from('sessions')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('day_type', 'competition')
+        .from('sessions').select('*')
+        .eq('user_id', userId).eq('day_type', 'competition')
 
       const resultado = await recalcularPlanAction(
-        perfil,
-        todasSesiones || [],
-        competiciones || [],
+        perfil, todasSesiones || [], competiciones || [],
         ca || { ca: 3, estado: 'Moderado', recomendacion: 'Según plan', acr: 1, componentes: {} },
         'Recálculo manual solicitado por el usuario'
       )
 
       if (resultado?.sesiones) {
-        await supabase
-          .from('sessions')
-          .delete()
-          .eq('user_id', userId)
-          .gte('date', hoy)
-          .neq('day_type', 'competition')
+        await supabase.from('sessions').delete()
+          .eq('user_id', userId).gte('date', hoy).neq('day_type', 'competition')
 
         const nuevasSesiones = resultado.sesiones.map((s: any) => ({
-          ...s,
-          user_id: userId,
-          type: s.day_type || 'training',
+          ...s, user_id: userId, type: s.day_type || 'training',
         }))
         await supabase.from('sessions').insert(nuevasSesiones)
         await fetchData()
@@ -149,40 +140,30 @@ export default function CalendarioPage() {
     } catch (err) {
       console.error('Error recalculando plan:', err)
     }
-
     setGenerando(false)
   }
 
   const handleEnviarChat = async () => {
     if (!inputChat.trim() || cargandoChat) return
-
     const nuevoMensaje = { role: 'user', content: inputChat }
     const historial = [...mensajesChat, nuevoMensaje]
     setMensajesChat(historial)
     setInputChat('')
     setCargandoChat(true)
-
     try {
       const contexto = {
-        perfil,
-        ca,
+        perfil, ca,
         sesionesProximas: sessions
           .filter(s => s.date >= new Date().toISOString().split('T')[0])
           .slice(0, 10),
       }
-
       const respuesta = await chatAsistenteAction(
-        historial.map(m => ({ role: m.role, content: m.content })),
-        contexto
+        historial.map(m => ({ role: m.role, content: m.content })), contexto
       )
-
-      if (respuesta) {
-        setMensajesChat([...historial, { role: 'assistant', content: respuesta }])
-      }
+      if (respuesta) setMensajesChat([...historial, { role: 'assistant', content: respuesta }])
     } catch (err) {
       console.error('Error en chat:', err)
     }
-
     setCargandoChat(false)
   }
 
@@ -202,7 +183,13 @@ export default function CalendarioPage() {
       <div className="max-w-6xl mx-auto">
 
         <div className="flex justify-between items-center mb-4">
-          <h1 className="text-2xl font-bold tracking-widest">CURTIMIENTO</h1>
+          <div className="flex items-center gap-4">
+  <h1 className="text-2xl font-bold tracking-widest">CURTIMIENTO</h1>
+  <a href="/perfil"
+    className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
+    👤 Perfil
+  </a>
+</div>
           <div className="flex items-center gap-3">
             {ca && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl px-3 py-2 text-sm">
@@ -222,7 +209,7 @@ export default function CalendarioPage() {
               </button>
             </div>
             <button
-              onClick={() => planGenerado ? setShowConfirmRecalc(true) : handleGenerarPlan()}
+              onClick={() => planGenerado ? setShowConfirmRecalc(true) : setShowModalPlan(true)}
               disabled={generando || !perfil}
               className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-2 rounded-xl text-sm font-medium transition flex items-center gap-2">
               {generando ? (
@@ -247,9 +234,42 @@ export default function CalendarioPage() {
         {loading ? (
           <div className="text-center text-gray-500 py-20">Cargando...</div>
         ) : (
-          <CalendarMonth currentDate={currentDate} sessions={sessions} onRefresh={fetchData} />
+          <CalendarMonth
+            currentDate={currentDate}
+            sessions={sessions}
+            onRefresh={fetchData}
+            schedulePattern={perfil?.schedule_pattern}
+          />
         )}
       </div>
+
+      {showModalPlan && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 rounded-2xl w-full max-w-md border border-gray-800 p-6">
+            <h3 className="font-semibold text-lg mb-2">⚡ Generar plan</h3>
+            <p className="text-gray-400 text-sm mb-4">
+              ¿Alguna instrucción especial para la IA? Por ejemplo: prioridades, lesiones, preferencias...
+            </p>
+            <textarea
+              className="w-full bg-gray-800 text-white rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              rows={4}
+              placeholder="Ej: Prioriza el running, tengo tendencia a lesionarme la rodilla derecha..."
+              value={instruccionesLibres}
+              onChange={e => setInstruccionesLibres(e.target.value)}
+            />
+            <div className="flex gap-3 mt-4">
+              <button onClick={() => setShowModalPlan(false)}
+                className="flex-1 bg-gray-800 hover:bg-gray-700 py-3 rounded-xl text-sm transition">
+                Cancelar
+              </button>
+              <button onClick={() => { setShowModalPlan(false); handleGenerarPlan() }}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 py-3 rounded-xl text-sm font-medium transition">
+                Generar plan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showConfirmRecalc && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -272,7 +292,6 @@ export default function CalendarioPage() {
         </div>
       )}
 
-      {/* Chat flotante */}
       <div className="fixed bottom-6 right-6 flex flex-col items-end gap-3 z-40">
         {chatAbierto && (
           <div className="w-80 bg-gray-900 border border-purple-900 rounded-2xl overflow-hidden flex flex-col shadow-2xl"
@@ -284,7 +303,6 @@ export default function CalendarioPage() {
               </div>
               <button onClick={() => setChatAbierto(false)} className="text-gray-500 hover:text-white text-sm">✕</button>
             </div>
-
             <div className="flex-1 overflow-y-auto p-3 space-y-3">
               {mensajesChat.map((m, i) => (
                 <div key={i} className={`flex flex-col gap-1 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
@@ -301,7 +319,6 @@ export default function CalendarioPage() {
               )}
               <div ref={chatEndRef} />
             </div>
-
             <div className="p-3 border-t border-gray-800 flex gap-2">
               <input
                 className="flex-1 bg-gray-800 text-white rounded-xl px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-purple-500"
@@ -317,7 +334,6 @@ export default function CalendarioPage() {
             </div>
           </div>
         )}
-
         <button onClick={() => setChatAbierto(!chatAbierto)}
           className="w-12 h-12 bg-purple-600 hover:bg-purple-700 rounded-full flex items-center justify-center text-xl shadow-lg transition">
           {chatAbierto ? '✕' : '✦'}

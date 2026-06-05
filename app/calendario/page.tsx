@@ -121,10 +121,13 @@ const { data: haySesiones } = await supabase
         .from('sessions').select('*')
         .eq('user_id', userId).eq('day_type', 'competition')
 
-      const resultado = await recalcularPlanAction(
-        perfil, todasSesiones || [], competiciones || [],
+    const resultado = await recalcularPlanAction(
+        perfil,
+        todasSesiones || [],
+        competiciones || [],
         ca || { ca: 3, estado: 'Moderado', recomendacion: 'Según plan', acr: 1, componentes: {} },
-        'Recálculo manual solicitado por el usuario'
+        'Recálculo manual solicitado por el usuario',
+        instruccionesLibres
       )
 
       if (resultado?.sesiones) {
@@ -271,26 +274,33 @@ const { data: haySesiones } = await supabase
         </div>
       )}
 
-      {showConfirmRecalc && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 rounded-2xl w-full max-w-sm border border-gray-800 p-6">
-            <h3 className="font-semibold text-lg mb-2">¿Recalcular el plan?</h3>
-            <p className="text-gray-400 text-sm mb-6">
-              Se reemplazarán todas las sesiones futuras. Las sesiones pasadas y las competiciones no se tocarán.
-            </p>
-            <div className="flex gap-3">
-              <button onClick={() => setShowConfirmRecalc(false)}
-                className="flex-1 bg-gray-800 hover:bg-gray-700 py-3 rounded-xl text-sm transition">
-                Cancelar
-              </button>
-              <button onClick={handleRecalcular}
-                className="flex-1 bg-blue-600 hover:bg-blue-700 py-3 rounded-xl text-sm font-medium transition">
-                Sí, recalcular
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+{showConfirmRecalc && (
+  <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+    <div className="bg-gray-900 rounded-2xl w-full max-w-md border border-gray-800 p-6">
+      <h3 className="font-semibold text-lg mb-2">⟳ Recalcular plan</h3>
+      <p className="text-gray-400 text-sm mb-4">
+        Se reemplazarán todas las sesiones futuras. Las pasadas y competiciones no se tocarán.
+      </p>
+      <textarea
+        className="w-full bg-gray-800 text-white rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 resize-none mb-4"
+        rows={3}
+        placeholder="Instrucciones opcionales para la IA: cambios de objetivo, lesiones, preferencias..."
+        value={instruccionesLibres}
+        onChange={e => setInstruccionesLibres(e.target.value)}
+      />
+      <div className="flex gap-3">
+        <button onClick={() => setShowConfirmRecalc(false)}
+          className="flex-1 bg-gray-800 hover:bg-gray-700 py-3 rounded-xl text-sm transition">
+          Cancelar
+        </button>
+        <button onClick={handleRecalcular}
+          className="flex-1 bg-blue-600 hover:bg-blue-700 py-3 rounded-xl text-sm font-medium transition">
+          Sí, recalcular
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 
       <div className="fixed bottom-6 right-6 flex flex-col items-end gap-3 z-40">
         {chatAbierto && (

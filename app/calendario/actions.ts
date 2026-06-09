@@ -264,6 +264,66 @@ Genera el plan completo día a día del ${fechaInicio} al ${fechaFin}:`
     }
   }
 
+  // Validador: corregir distribución de zonas en días Libres
+  if (perfil.schedule_pattern?.cycle_start && perfil.schedule_pattern?.pattern) {
+    const sp = perfil.schedule_pattern
+    const patternArr: string[] = sp.pattern
+    const cycleStart = new Date(sp.cycle_start + 'T12:00:00')
+    const discPrioritaria = perfil.disciplines?.priority || 'Running'
+
+    sesiones.sort((a, b) => a.date.localeCompare(b.date))
+
+    const getTurno = (dateStr: string) => {
+      const diff = Math.round((new Date(dateStr + 'T12:00:00').getTime() - cycleStart.getTime()) / 86400000)
+      const idx = ((diff % patternArr.length) + patternArr.length) % patternArr.length
+      return patternArr[idx]
+    }
+
+    let bloqueLibres: any[] = []
+    for (let i = 0; i <= sesiones.length; i++) {
+      const s = sesiones[i]
+      const turno = s ? getTurno(s.date) : null
+      const esLibreEntrenamiento = turno === 'L' && s?.day_type === 'training'
+
+      if (esLibreEntrenamiento) {
+        bloqueLibres.push(s)
+      } else {
+        if (bloqueLibres.length >= 2) {
+          // Comprobar si hay competición en los 3 días previos al bloque
+          const fechaPrimerLibre = bloqueLibres[0].date
+          const hayCompReciente = competiciones.some((c: any) => {
+            const diffDias = Math.round(
+              (new Date(fechaPrimerLibre + 'T12:00:00').getTime() - new Date(c.date + 'T12:00:00').getTime()) / 86400000
+            )
+            return diffDias >= 0 && diffDias <= 3
+          })
+
+          if (!hayCompReciente) {
+            // Primer libre → Z4 con disciplina prioritaria
+            const primero = bloqueLibres[0]
+            if ((primero.planned_zone || 0) < 4) {
+              primero.planned_zone = 4
+              primero.discipline = discPrioritaria
+              primero.title = `${discPrioritaria} Z4 — sesión de calidad`
+              primero.description = `Sesión intensa en Z4. Usar zonas del atleta.`
+              primero.planned_load = null
+            }
+            // Último libre → Z3 mínimo con disciplina prioritaria
+            const ultimo = bloqueLibres[bloqueLibres.length - 1]
+            if ((ultimo.planned_zone || 0) < 3) {
+              ultimo.planned_zone = 3
+              ultimo.discipline = discPrioritaria
+              ultimo.title = `${discPrioritaria} Z3 — sweet spot`
+              ultimo.description = `Sesión a ritmo de umbral aeróbico. Usar zonas del atleta.`
+              ultimo.planned_load = null
+            }
+          }
+        }
+        bloqueLibres = []
+      }
+    }
+  }
+
   const { calcularPlannedLoad } = await import('@/lib/fatigaService')
   const { data: { session: authSession } } = await (await import('@/lib/supabase')).supabase.auth.getSession()
   if (authSession) {
@@ -324,6 +384,64 @@ Genera el plan del ${hoy} al ${fechaFin}:`
   const texto = await llamarClaude(SYSTEM_PLAN, prompt)
   const nuevasSesiones = parsearRespuesta(texto)
   if (nuevasSesiones.length === 0) throw new Error('No se generaron sesiones válidas')
+
+  // Mismo validador que en generarPlanAction
+  if (perfil.schedule_pattern?.cycle_start && perfil.schedule_pattern?.pattern) {
+    const sp = perfil.schedule_pattern
+    const patternArr: string[] = sp.pattern
+    const cycleStart = new Date(sp.cycle_start + 'T12:00:00')
+    const discPrioritaria = perfil.disciplines?.priority || 'Running'
+
+    nuevasSesiones.sort((a, b) => a.date.localeCompare(b.date))
+
+    const getTurno = (dateStr: string) => {
+      const diff = Math.round((new Date(dateStr + 'T12:00:00').getTime() - cycleStart.getTime()) / 86400000)
+      const idx = ((diff % patternArr.length) + patternArr.length) % patternArr.length
+      return patternArr[idx]
+    }
+
+    let bloqueLibres: any[] = []
+    for (let i = 0; i <= nuevasSesiones.length; i++) {
+      const s = nuevasSesiones[i]
+      const turno = s ? getTurno(s.date) : null
+      const esLibreEntrenamiento = turno === 'L' && s?.day_type === 'training'
+
+      if (esLibreEntrenamiento) {
+        bloqueLibres.push(s)
+      } else {
+        if (bloqueLibres.length >= 2) {
+          const fechaPrimerLibre = bloqueLibres[0].date
+          const hayCompReciente = competiciones.some((c: any) => {
+            const diffDias = Math.round(
+              (new Date(fechaPrimerLibre + 'T12:00:00').getTime() - new Date(c.date + 'T12:00:00').getTime()) / 86400000
+            )
+            return diffDias >= 0 && diffDias <= 3
+          })
+
+          if (!hayCompReciente) {
+            const primero = bloqueLibres[0]
+            if ((primero.planned_zone || 0) < 4) {
+              primero.planned_zone = 4
+              primero.discipline = discPrioritaria
+              primero.title = `${discPrioritaria} Z4 — sesión de calidad`
+              primero.description = `Sesión intensa en Z4. Usar zonas del atleta.`
+              primero.planned_load = null
+            }
+            const ultimo = bloqueLibres[bloqueLibres.length - 1]
+            if ((ultimo.planned_zone || 0) < 3) {
+              ultimo.planned_zone = 3
+              ultimo.discipline = discPrioritaria
+              ultimo.title = `${discPrioritaria} Z3 — sweet spot`
+              ultimo.description = `Sesión a ritmo de umbral aeróbico. Usar zonas del atleta.`
+              ultimo.planned_load = null
+            }
+          }
+        }
+        bloqueLibres = []
+      }
+    }
+  }
+
   return { sesiones: nuevasSesiones }
 }
 

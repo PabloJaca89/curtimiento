@@ -109,14 +109,12 @@ function generarCadenciaTexto(perfil: any, fechaInicio: string, fechaFin: string
   }
 
   const start = new Date(sp.cycle_start + 'T12:00:00')
-  const inicio = new Date(fechaInicio + 'T12:00:00')
-  const fin = new Date(fechaFin + 'T12:00:00')
-
   const lineas = ['CADENCIA LABORAL DÍA A DÍA:']
-  const cursor = new Date(inicio)
+  const cursor = new Date(fechaInicio + 'T12:00:00')
 
-  while (cursor <= fin) {
+  while (true) {
     const dateStr = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`
+    if (dateStr > fechaFin) break
     const diff = Math.round((cursor.getTime() - start.getTime()) / 86400000)
     const idx = ((diff % pattern.length) + pattern.length) % pattern.length
     const turno = pattern[idx]
@@ -164,7 +162,8 @@ DISTRIBUCIÓN DE ZONAS:
 - El último o penúltimo día LIBRE antes de cambiar a MAÑANAS tiene que haber como mínimo Z3 alguno de esos días, salvo que interfiera con recuperación de competiciones pasadas o preparación de futuras competiciones.
 - En bloques de 5 días Libres consecutivos: el día Libre 1 debe ser Z4 o Z5, el día Libre 5 debe ser Z4, Z5 o Z3 (si lleva más de 2 semanas sin Z3). Los días Libre 2, 3 y 4 siguen la secuencia normal de recuperación
 - La disciplina prioritaria del atleta debe protagonizar la mayoría de las sesiones Z4 y Z5. Si la disciplina prioritaria es Running, al menos 2 de cada 3 sesiones Z4/Z5 deben ser Running. Si es Bici carretera, al menos 2 de cada 3 sesiones Z4/Z5 deben ser en bici
-- Tras Z3, con 1 día suave de por medio, ya se puede meter Z4. Ejemplo: Z3 → Z1/Z2 o gym → Z4- Días con energía 3 sobre 5: Z2 o Z3 suave
+- Tras Z3, con 1 día suave de por medio, ya se puede meter Z4. Ejemplo: Z3 → Z1/Z2 o gym → Z4
+- Días con energía 3 sobre 5: Z2 o Z3 suave
 - Días con energía 2 sobre 5: Z1 o Z2, máx 60min
 - Días con energía 1 sobre 5: descanso obligatorio
 - ALTERNANCIA OBLIGATORIA: nunca dos días consecutivos de la misma disciplina de cardio (running, bici, spinning). Ejemplo correcto: Running → Gym → Bici. Ejemplo incorrecto: Running → Running
@@ -235,9 +234,9 @@ Genera el plan completo día a día del ${fechaInicio} al ${fechaFin}:`
   // Rellenar días sin sesión como Descanso
   const fechasConSesion = new Set(sesiones.map(s => s.date))
   const cursor = new Date(fechaInicio + 'T12:00:00')
-  const finDate = new Date(fechaFin + 'T12:00:00')
-  while (cursor <= finDate) {
+  while (true) {
     const dateStr = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`
+    if (dateStr > fechaFin) break
     if (!fechasConSesion.has(dateStr)) {
       sesiones.push({
         date: dateStr, discipline: 'Descanso', day_type: 'rest',
@@ -246,6 +245,23 @@ Genera el plan completo día a día del ${fechaInicio} al ${fechaFin}:`
       })
     }
     cursor.setDate(cursor.getDate() + 1)
+  }
+
+  // Corregir sesiones Z4/Z5 el día antes de una competición → Z2 corta
+  const fechasCompeticion = new Set(competiciones.map((c: any) => c.date))
+  for (const s of sesiones) {
+    if (s.planned_zone >= 4) {
+      const diaSiguiente = new Date(s.date + 'T12:00:00')
+      diaSiguiente.setDate(diaSiguiente.getDate() + 1)
+      const diaSiguienteStr = `${diaSiguiente.getFullYear()}-${String(diaSiguiente.getMonth() + 1).padStart(2, '0')}-${String(diaSiguiente.getDate()).padStart(2, '0')}`
+      if (fechasCompeticion.has(diaSiguienteStr)) {
+        s.planned_zone = 2
+        s.planned_duration = s.discipline === 'Bici carretera' || s.discipline === 'BTT' || s.discipline === 'Spinning' ? 75 : 30
+        s.title = 'Activación suave pre-competición'
+        s.description = 'Sesión corta de activación. Mantén las piernas sueltas, sin forzar.'
+        s.planned_load = 3
+      }
+    }
   }
 
   const { calcularPlannedLoad } = await import('@/lib/fatigaService')

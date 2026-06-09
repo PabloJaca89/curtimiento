@@ -46,7 +46,7 @@ export default function CalendarioPage() {
       .single()
     setPerfil(p)
 
-const { data: haySesiones } = await supabase
+    const { data: haySesiones } = await supabase
       .from('sessions')
       .select('id')
       .eq('user_id', session.user.id)
@@ -54,14 +54,19 @@ const { data: haySesiones } = await supabase
       .limit(1)
     setPlanGenerado(!!(haySesiones && haySesiones.length > 0))
 
-    const start = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1)
-    const end = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0)
+    // Calcular fechas del mes sin depender de toISOString (evita bug de zona horaria)
+    const y = currentDate.getFullYear()
+    const m = currentDate.getMonth()
+    const startStr = `${y}-${String(m + 1).padStart(2, '0')}-01`
+    const lastDay = new Date(y, m + 1, 0).getDate()
+    const endStr = `${y}-${String(m + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+
     const { data: s } = await supabase
       .from('sessions')
       .select('*')
       .eq('user_id', session.user.id)
-      .gte('date', start.toISOString().split('T')[0])
-      .lte('date', end.toISOString().split('T')[0])
+      .gte('date', startStr)
+      .lte('date', endStr)
     setSessions(s || [])
 
     const caHoy = await calcularCargaAlostatica(session.user.id, null)
@@ -85,18 +90,11 @@ const { data: haySesiones } = await supabase
 
       const resultado = await generarPlanAction(perfil, competiciones || [], hoy, fechaFin, instruccionesLibres)
 
-     if (resultado?.sesiones) {
-        // No sobreescribir días que ya tienen competición
-        const fechasConCompeticion = new Set(
-          (competiciones || []).map((c: any) => c.date)
-        )
+      if (resultado?.sesiones) {
+        const fechasConCompeticion = new Set((competiciones || []).map((c: any) => c.date))
         const nuevasSesiones = resultado.sesiones
           .filter((s: any) => !fechasConCompeticion.has(s.date))
-          .map((s: any) => ({
-            ...s,
-            user_id: userId,
-            type: s.day_type || 'training',
-          }))
+          .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
         await supabase.from('sessions').insert(nuevasSesiones)
         setPlanGenerado(true)
         await fetchData()
@@ -121,10 +119,8 @@ const { data: haySesiones } = await supabase
         .from('sessions').select('*')
         .eq('user_id', userId).eq('day_type', 'competition')
 
-    const resultado = await recalcularPlanAction(
-        perfil,
-        todasSesiones || [],
-        competiciones || [],
+      const resultado = await recalcularPlanAction(
+        perfil, todasSesiones || [], competiciones || [],
         ca || { ca: 3, estado: 'Moderado', recomendacion: 'Según plan', acr: 1, componentes: {} },
         'Recálculo manual solicitado por el usuario',
         instruccionesLibres
@@ -187,12 +183,12 @@ const { data: haySesiones } = await supabase
 
         <div className="flex justify-between items-center mb-4">
           <div className="flex items-center gap-4">
-  <h1 className="text-2xl font-bold tracking-widest">CURTIMIENTO</h1>
-  <a href="/perfil"
-    className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
-    👤 Perfil
-  </a>
-</div>
+            <h1 className="text-2xl font-bold tracking-widest">CURTIMIENTO</h1>
+            <a href="/perfil"
+              className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
+              👤 Perfil
+            </a>
+          </div>
           <div className="flex items-center gap-3">
             {ca && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl px-3 py-2 text-sm">
@@ -274,33 +270,33 @@ const { data: haySesiones } = await supabase
         </div>
       )}
 
-{showConfirmRecalc && (
-  <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-    <div className="bg-gray-900 rounded-2xl w-full max-w-md border border-gray-800 p-6">
-      <h3 className="font-semibold text-lg mb-2">⟳ Recalcular plan</h3>
-      <p className="text-gray-400 text-sm mb-4">
-        Se reemplazarán todas las sesiones futuras. Las pasadas y competiciones no se tocarán.
-      </p>
-      <textarea
-        className="w-full bg-gray-800 text-white rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 resize-none mb-4"
-        rows={3}
-        placeholder="Instrucciones opcionales para la IA: cambios de objetivo, lesiones, preferencias..."
-        value={instruccionesLibres}
-        onChange={e => setInstruccionesLibres(e.target.value)}
-      />
-      <div className="flex gap-3">
-        <button onClick={() => setShowConfirmRecalc(false)}
-          className="flex-1 bg-gray-800 hover:bg-gray-700 py-3 rounded-xl text-sm transition">
-          Cancelar
-        </button>
-        <button onClick={handleRecalcular}
-          className="flex-1 bg-blue-600 hover:bg-blue-700 py-3 rounded-xl text-sm font-medium transition">
-          Sí, recalcular
-        </button>
-      </div>
-    </div>
-  </div>
-)}
+      {showConfirmRecalc && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 rounded-2xl w-full max-w-md border border-gray-800 p-6">
+            <h3 className="font-semibold text-lg mb-2">⟳ Recalcular plan</h3>
+            <p className="text-gray-400 text-sm mb-4">
+              Se reemplazarán todas las sesiones futuras. Las pasadas y competiciones no se tocarán.
+            </p>
+            <textarea
+              className="w-full bg-gray-800 text-white rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 resize-none mb-4"
+              rows={3}
+              placeholder="Instrucciones opcionales para la IA: cambios de objetivo, lesiones, preferencias..."
+              value={instruccionesLibres}
+              onChange={e => setInstruccionesLibres(e.target.value)}
+            />
+            <div className="flex gap-3">
+              <button onClick={() => setShowConfirmRecalc(false)}
+                className="flex-1 bg-gray-800 hover:bg-gray-700 py-3 rounded-xl text-sm transition">
+                Cancelar
+              </button>
+              <button onClick={handleRecalcular}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 py-3 rounded-xl text-sm font-medium transition">
+                Sí, recalcular
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="fixed bottom-6 right-6 flex flex-col items-end gap-3 z-40">
         {chatAbierto && (

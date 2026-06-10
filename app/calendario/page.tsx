@@ -130,9 +130,10 @@ export default function CalendarioPage() {
         await supabase.from('sessions').delete()
           .eq('user_id', userId).gte('date', hoy).neq('day_type', 'competition')
 
-        const nuevasSesiones = resultado.sesiones.map((s: any) => ({
-          ...s, user_id: userId, type: s.day_type || 'training',
-        }))
+        const fechasConCompeticion = new Set((competiciones || []).map((c: any) => c.date))
+        const nuevasSesiones = resultado.sesiones
+          .filter((s: any) => !fechasConCompeticion.has(s.date))
+          .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
         await supabase.from('sessions').insert(nuevasSesiones)
         await fetchData()
       }

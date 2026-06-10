@@ -27,11 +27,6 @@ export default function CalendarioPage() {
   const [cargandoChat, setCargandoChat] = useState(false)
   const chatEndRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => { fetchData() }, [currentDate])
-  useEffect(() => {
-    if (chatAbierto) chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [mensajesChat, chatAbierto])
-
   const fetchData = async () => {
     setLoading(true)
     const { data: { session } } = await supabase.auth.getSession()
@@ -74,6 +69,11 @@ export default function CalendarioPage() {
 
     setLoading(false)
   }
+
+  useEffect(() => { fetchData() }, [currentDate])
+  useEffect(() => {
+    if (chatAbierto) chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [mensajesChat, chatAbierto])
 
   const handleGenerarPlan = async () => {
     if (!perfil) return

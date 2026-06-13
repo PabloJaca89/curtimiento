@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
-import { generarPlanAction, recalcularPlanAction, chatAsistenteAction } from './actions'
+import { generarPlanAction, recalcularPlanAction, chatAsistenteAction, ajustarVentanaCompeticionAction } from './actions'
 import { calcularCargaAlostatica } from '@/lib/fatigaService'
 import CalendarMonth from '@/components/calendar/CalendarMonth'
 
@@ -18,6 +18,8 @@ export default function CalendarioPage() {
   const [showConfirmRecalc, setShowConfirmRecalc] = useState(false)
   const [showModalPlan, setShowModalPlan] = useState(false)
   const [instruccionesLibres, setInstruccionesLibres] = useState('')
+  const [compPendiente, setCompPendiente] = useState<any>(null)
+  const [showAjusteVentana, setShowAjusteVentana] = useState(false)
 
   const [chatAbierto, setChatAbierto] = useState(false)
   const [mensajesChat, setMensajesChat] = useState<{ role: string; content: string }[]>([
@@ -143,6 +145,91 @@ export default function CalendarioPage() {
     setGenerando(false)
   }
 
+  const handleCompeticionAnadida = (comp: any) => {
+    // Solo ofrecer ajuste si ya hay plan generado; sin plan no hay nada que recalcular
+    if (!planGenerado) return
+    setCompPendiente(comp)
+    setShowAjusteVentana(true)
+  }
+
+  const handleAjustarVentana = async () => {
+    if (!compPendiente || !perfil) return
+    const comp = compPendiente
+    setShowAjusteVentana(false)
+    setGenerando(true)
+    try {
+      const toStr = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+      const dWinStart = new Date(comp.date + 'T12:00:00'); dWinStart.setDate(dWinStart.getDate() - 5)
+      const dWinEnd = new Date(comp.date + 'T12:00:00'); dWinEnd.setDate(dWinEnd.getDate() + 5)
+      const dCtxStart = new Date(comp.date + 'T12:00:00'); dCtxStart.setDate(dCtxStart.getDate() - 8)
+      const dCtxEnd = new Date(comp.date + 'T12:00:00'); dCtxEnd.setDate(dCtxEnd.getDate() + 8)
+      const ventanaInicio = toStr(dWinStart)
+      const ventanaFin = toStr(dWinEnd)
+      const ctxInicio = toStr(dCtxStart)
+      const ctxFin = toStr(dCtxEnd)
+
+      // Sesiones del rango ampliado (ventana + contexto de bordes)
+      const { data: rango } = await supabase
+        .from('sessions').select('*')
+        .eq('user_id', userId)
+        .gte('date', ctxInicio).lte('date', ctxFin)
+      const todas = rango || []
+
+      // Todas las competiciones (para respetar puestas a punto solapadas)
+      const { data: competiciones } = await supabase
+        .from('sessions').select('*')
+        .eq('user_id', userId).eq('day_type', 'competition')
+
+      const sesionesVentana = todas.filter((s: any) =>
+        s.date >= ventanaInicio && s.date <= ventanaFin && s.day_type !== 'competition')
+      const sesionesContexto = todas.filter((s: any) =>
+        (s.date < ventanaInicio || s.date > ventanaFin) && s.day_type !== 'competition')
+
+      const resultado = await ajustarVentanaCompeticionAction(
+        perfil, comp, sesionesVentana, sesionesContexto, competiciones || []
+      )
+
+      if (resultado?.sesiones) {
+        // Red de seguridad: rellenar días de la ventana sin sesión como Descanso (excepto el día de competición)
+        const fechasGeneradas = new Set(resultado.sesiones.map((s: any) => s.date))
+        const sesionesFinales = [...resultado.sesiones]
+        const cur = new Date(ventanaInicio + 'T12:00:00')
+        const finV = new Date(ventanaFin + 'T12:00:00')
+        while (cur <= finV) {
+          const ds = toStr(cur)
+          if (ds !== comp.date && !fechasGeneradas.has(ds)) {
+            sesionesFinales.push({
+              date: ds, discipline: 'Descanso', day_type: 'rest',
+              planned_zone: null, planned_duration: null, planned_load: null,
+              title: 'Descanso', description: null, type: 'rest',
+            })
+          }
+          cur.setDate(cur.getDate() + 1)
+        }
+
+        // Borrar entrenamientos/descansos de la ventana (sin tocar competiciones)
+        await supabase.from('sessions').delete()
+          .eq('user_id', userId)
+          .gte('date', ventanaInicio).lte('date', ventanaFin)
+          .neq('day_type', 'competition')
+
+        // Insertar las nuevas, evitando fechas que ya tengan competición
+        const fechasConCompeticion = new Set((competiciones || []).map((c: any) => c.date))
+        const nuevasSesiones = sesionesFinales
+          .filter((s: any) => !fechasConCompeticion.has(s.date))
+          .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
+        await supabase.from('sessions').insert(nuevasSesiones)
+        await fetchData()
+      }
+    } catch (err) {
+      console.error('Error ajustando ventana de competición:', err)
+    }
+    setCompPendiente(null)
+    setGenerando(false)
+  }
+
   const handleEnviarChat = async () => {
     if (!inputChat.trim() || cargandoChat) return
     const nuevoMensaje = { role: 'user', content: inputChat }
@@ -239,6 +326,7 @@ export default function CalendarioPage() {
             sessions={sessions}
             onRefresh={fetchData}
             schedulePattern={perfil?.schedule_pattern}
+            onCompetitionAdded={handleCompeticionAnadida}
           />
         )}
       </div>
@@ -293,6 +381,30 @@ export default function CalendarioPage() {
               <button onClick={handleRecalcular}
                 className="flex-1 bg-blue-600 hover:bg-blue-700 py-3 rounded-xl text-sm font-medium transition">
                 Sí, recalcular
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAjusteVentana && compPendiente && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 rounded-2xl w-full max-w-md border border-gray-800 p-6">
+            <h3 className="font-semibold text-lg mb-2">🏁 Competición añadida</h3>
+            <p className="text-gray-400 text-sm mb-4">
+              Has añadido {compPendiente.modalidad || 'una competición'} el{' '}
+              {new Date(compPendiente.date + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'long' })}
+              {' '}(importancia {compPendiente.competition_importance}). ¿Quieres ajustar los entrenamientos
+              de los días de alrededor para la puesta a punto y la recuperación?
+            </p>
+            <div className="flex gap-3">
+              <button onClick={() => { setShowAjusteVentana(false); setCompPendiente(null) }}
+                className="flex-1 bg-gray-800 hover:bg-gray-700 py-3 rounded-xl text-sm transition">
+                No, mantener
+              </button>
+              <button onClick={handleAjustarVentana}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 py-3 rounded-xl text-sm font-medium transition">
+                Sí, ajustar
               </button>
             </div>
           </div>

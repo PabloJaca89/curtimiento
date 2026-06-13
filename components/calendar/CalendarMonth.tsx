@@ -93,13 +93,14 @@ interface Session {
 
 interface Props {
   currentDate: Date; sessions: Session[]; onRefresh: () => void; schedulePattern?: any
+  onCompetitionAdded?: (competicion: any) => void
 }
 
 function toDateStr(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
-export default function CalendarMonth({ currentDate, sessions, onRefresh, schedulePattern }: Props) {
+export default function CalendarMonth({ currentDate, sessions, onRefresh, schedulePattern, onCompetitionAdded }: Props) {
   const [showModal, setShowModal] = useState(false)
   const [modalDate, setModalDate] = useState<string>('')
   const [modalSession, setModalSession] = useState<Session | null>(null)
@@ -281,6 +282,7 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh, schedu
           editSession={modalSession}
           onClose={() => setShowModal(false)}
           onRefresh={() => { onRefresh(); setShowModal(false) }}
+          onCompetitionAdded={onCompetitionAdded}
         />
       )}
 
@@ -321,9 +323,10 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh, schedu
   )
 }
 
-function DayModal({ date, sessions, editSession, onClose, onRefresh }: {
+function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetitionAdded }: {
   date: string; sessions: Session[]; editSession: Session | null
   onClose: () => void; onRefresh: () => void
+  onCompetitionAdded?: (competicion: any) => void
 }) {
   const isEdit = !!editSession
   const isPast = date < toDateStr(new Date())
@@ -380,6 +383,17 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh }: {
       })
     }
     setLoading(false)
+
+    // Aviso hacia arriba: competición NUEVA recién creada (page.tsx decide si recalcular ±5)
+    if (!isEdit && type === 'competition' && onCompetitionAdded) {
+      onCompetitionAdded({
+        date,
+        competition_importance: importance,
+        modalidad: modalidad || null,
+        distancia: distancia || null,
+      })
+    }
+
     onRefresh()
   }
 

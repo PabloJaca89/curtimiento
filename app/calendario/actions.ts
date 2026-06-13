@@ -482,3 +482,115 @@ Responde siempre en español y de forma concisa.`
   const data = await response.json()
   return data.content?.[0]?.text || ''
 }
+
+// ─── AJUSTE DE VENTANA ALREDEDOR DE COMPETICIÓN (±5 días) ────────────────────
+// Recalcula SOLO los días [comp-5, comp+5] para puesta a punto y recuperación.
+// No usa el validador de días Libres (eso pisaría el taper).
+const SYSTEM_VENTANA = `Eres un entrenador experto en multideporte ajustando la puesta a punto y la recuperación alrededor de una competición.
+Respondes ÚNICAMENTE con las sesiones en formato de texto plano, una por línea.
+Formato estricto: YYYY-MM-DD|Disciplina|Zona|Duración_min|Carga_1-10|Descripción_corta
+- Zona: Z1, Z2, Z3, Z4 o Z5 (vacío para fuerza y descanso)
+- Disciplinas válidas (usa EXACTAMENTE estos nombres): Running, Bici carretera, BTT, Spinning, Fuerza tren inferior, Fuerza tren superior A, Fuerza tren superior B, Descanso
+- USA ÚNICAMENTE las disciplinas del perfil del atleta
+- NUNCA generes la sesión de Competición (ya existe, no la toques)
+- Sin cabeceras, sin texto adicional, sin markdown`
+
+export async function ajustarVentanaCompeticionAction(
+  perfil: any,
+  competicion: any,
+  sesionesVentana: any[],
+  sesionesContexto: any[],
+  competiciones: any[]
+): Promise<{ sesiones: any[] }> {
+
+  const toStr = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+  const importancia = competicion.competition_importance || 'B'
+  const compDate = competicion.date
+
+  const dPre = new Date(compDate + 'T12:00:00'); dPre.setDate(dPre.getDate() - 5)
+  const dPost = new Date(compDate + 'T12:00:00'); dPost.setDate(dPost.getDate() + 5)
+  const ventanaInicio = toStr(dPre)
+  const ventanaFin = toStr(dPost)
+
+  const zonasTexto = extraerZonasTexto(perfil)
+  const cadencia = generarCadenciaTexto(perfil, ventanaInicio, ventanaFin)
+
+  const fmt = (s: any) =>
+    `${s.date}|${s.discipline || s.day_type}|${s.planned_zone ? 'Z' + s.planned_zone : ''}|${s.planned_duration || ''}min|${s.title || ''}`
+
+  const reglasImportancia: Record<string, string> = {
+    A: `Importancia A (objetivo del año):
+- PRE: los 5 días previos solo Z2, Z1 y gym. Los 2 días inmediatamente anteriores: Z1 o descanso (en cualquier orden).
+- POST: el día posterior (día +1) muy suave: descanso, Z1 o gym tren superior. Los días +2 a +5: suaves, ÚNICAMENTE descanso, gym o Z2. NUNCA Z3, Z4 ni Z5 en estos días.`,
+    B: `Importancia B (importante):
+- PRE: los 4 días inmediatamente anteriores: Z2, gym, Z1 o descanso. El resto de la ventana, entrenamiento normal.
+- POST: el día posterior (día +1) muy suave: descanso, Z1 o gym tren superior. Los días +2 a +5: suaves, ÚNICAMENTE descanso, gym o Z2. NUNCA Z3, Z4 ni Z5 en estos días.`,
+    C: `Importancia C (para coger ritmo):
+- PRE: los 3 días anteriores suaves: Z1, Z2, gym o descanso.
+- POST: los 3 días posteriores suaves: ÚNICAMENTE descanso, gym o Z2. NUNCA Z3, Z4 ni Z5 en estos días.`,
+  }
+
+  const otrasComp = competiciones.filter((c: any) => c.date !== compDate)
+
+  const prompt = `Vas a ajustar SOLO los días del ${ventanaInicio} al ${ventanaFin} alrededor de una competición.
+
+PERFIL DEL ATLETA:
+Nombre: ${perfil.name}, Nivel: ${perfil.level}/5
+Disciplinas (SOLO estas): ${perfil.disciplines?.list?.join(', ')}
+Disciplina prioritaria: ${perfil.disciplines?.priority}
+Duración máxima sesión: ${perfil.max_session_duration}min
+${perfil.injuries ? `Lesiones: ${perfil.injuries}` : ''}
+
+${cadencia}
+
+${zonasTexto}
+
+COMPETICIÓN:
+- Fecha: ${compDate}
+- Importancia: ${importancia}
+- Modalidad: ${competicion.modalidad || ''} ${competicion.distancia || ''}
+
+${otrasComp.length > 0 ? `OTRAS COMPETICIONES CERCANAS (no las generes, respétalas):
+${otrasComp.map((c: any) => `- ${c.date}: ${c.modalidad || ''} (${c.competition_importance})`).join('\n')}
+` : ''}
+PLAN ACTUAL EN LA VENTANA (lo vas a REEMPLAZAR según las reglas de puesta a punto):
+${sesionesVentana.length > 0 ? sesionesVentana.map(fmt).join('\n') : 'Sin sesiones'}
+
+DÍAS FIJOS ALREDEDOR (NO los generes; tu ajuste debe encajar con ellos):
+${sesionesContexto.length > 0 ? sesionesContexto.map(fmt).join('\n') : 'Ninguno'}
+
+REGLAS DE PUESTA A PUNTO Y RECUPERACIÓN:
+${reglasImportancia[importancia] || reglasImportancia['B']}
+
+REGLAS GENERALES (no negociables):
+- Nunca dos días Z4 o Z5 consecutivos.
+- Nunca dos días seguidos de la misma disciplina de cardio (running, bici, spinning).
+- El primer día YA fuera de la parte suave de recuperación debe RETOMAR la intensidad normal, conectando con los días fijos posteriores. NO encadenes más días suaves de los que marca la regla: prohibido alargar la recuperación con Z1/Z2 de más.
+- Respeta la energía de cada día según el turno laboral indicado arriba (mañanas = sin intensidad).
+
+Genera ÚNICAMENTE las sesiones del ${ventanaInicio} al ${ventanaFin}, EXCLUYENDO el día de competición ${compDate}:`
+
+  const texto = await llamarClaude(SYSTEM_VENTANA, prompt)
+  const parseadas = parsearRespuesta(texto)
+
+  // Seguridad: solo fechas dentro de la ventana y nunca el día de la competición
+  const sesiones = parseadas.filter(
+    (s: any) => s.date >= ventanaInicio && s.date <= ventanaFin && s.date !== compDate
+  )
+
+  // Recalcular planned_load con el modelo de fatiga (igual que en generarPlanAction)
+  const { calcularPlannedLoad } = await import('@/lib/fatigaService')
+  const { data: { session: authSession } } = await (await import('@/lib/supabase')).supabase.auth.getSession()
+  if (authSession) {
+    for (const s of sesiones) {
+      if (s.day_type === 'training' && s.planned_zone && s.planned_duration) {
+        const load = await calcularPlannedLoad(authSession.user.id, s.discipline, s.planned_zone, s.planned_duration)
+        if (load !== null) s.planned_load = load
+      }
+    }
+  }
+
+  return { sesiones }
+}

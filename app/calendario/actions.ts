@@ -105,7 +105,7 @@ function generarCadenciaTexto(perfil: any, fechaInicio: string, fechaFin: string
   const pattern: string[] = sp.pattern
   const shiftEnergy: Record<string, number> = sp.shift_energy || {}
   const shiftNames: Record<string, string> = {
-    'M': 'Mañanas', 'T': 'Tardes', 'N': 'Noches', 'S': 'Saliente', 'L': 'Libre'
+    'M': 'Mañanas', 'T': 'Tardes', 'N': 'Noches', 'S': 'Saliente', 'L': 'Libre', 'W': 'Trabajo'
   }
 
   const start = new Date(sp.cycle_start + 'T12:00:00')
@@ -166,6 +166,7 @@ DISTRIBUCIÓN DE ZONAS:
 - Días con energía 3 sobre 5: Z2 o Z3 suave
 - Días con energía 2 sobre 5: Z1 o Z2, máx 60min
 - Días con energía 1 sobre 5: descanso obligatorio
+- DÍAS DE TRABAJO (turno 'Trabajo'): aunque la energía sea baja, SÍ se permite meter intensidad si la sesión es CORTA. Máximo 2 sesiones intensas (Z3, Z4 o Z5) por cada bloque de 7 días de Trabajo, ÚNICAMENTE Running (máximo 45 min) o Bici carretera (máximo 90 min). El resto de días de Trabajo: gym, Z1, Z2 o descanso. Esta excepción tiene prioridad sobre la limitación por energía baja SOLO en los días de Trabajo. Aprovecha esta posibilidad para no dejar todos los días de Trabajo en suave.
 - ALTERNANCIA OBLIGATORIA: nunca dos días consecutivos de la misma disciplina de cardio (running, bici, spinning). Ejemplo correcto: Running → Gym → Bici. Ejemplo incorrecto: Running → Running
 
 ANTES/DESPUÉS DE SESIONES INTENSAS:
@@ -186,6 +187,468 @@ FUERZA:
 TÉCNICA:
 - Para Z3/Z4/Z5 especificar series y ritmos exactos usando las zonas del atleta
 - No aumentar carga más de 10% por semana`
+
+// ─── CORRECTOR: dos intensos seguidos / cardio repetido ──────────────────────
+const CARDIO_DISCS = ['Running', 'Bici carretera', 'BTT', 'Spinning', 'Natación', 'Paddle surf']
+
+function construirDescripcionZona(disc: string, zona: number, perfil: any): { title: string; description: string } {
+  const z = 'z' + zona
+  const hr = perfil.heart_rate_zones?.[z]
+  const pace = perfil.running_paces?.[z]
+  const ftp = perfil.ftp || null
+
+  const partes: string[] = []
+  if (hr) partes.push(`FC ${hr.min}-${hr.max} ppm`)
+  if (disc === 'Running' && pace) partes.push(`ritmo ${pace.max}-${pace.min} min/km`)
+  if (['Bici carretera', 'BTT', 'Spinning'].includes(disc) && ftp) {
+    const p = calcularZonaFTP(ftp, z)
+    if (p) partes.push(p.toLowerCase())
+  }
+
+  const detalle = partes.length ? ` Mantén ${partes.join(' / ')}.` : ''
+  const esSuave = zona <= 2
+  const title = `${disc} Z${zona} — ${esSuave ? 'rodaje suave' : 'sesión'}`
+  const description = `${disc} en Z${zona}.${detalle} ${esSuave ? 'Ritmo cómodo y controlado, sin forzar.' : 'Mantén la intensidad objetivo.'}`
+  return { title, description }
+}
+
+function elegirCardioDistinto(prevDisc: string | undefined, nextDisc: string | undefined, cardioDisponible: string[]): string | null {
+  let opciones = cardioDisponible.filter(d => d !== prevDisc && d !== nextDisc)
+  if (opciones.length === 0) opciones = cardioDisponible.filter(d => d !== prevDisc)
+  if (opciones.length === 0) return null
+  return opciones[0]
+}
+
+// Repasa el plan día a día y corrige:
+// (1) dos días intensos (Z4/Z5) seguidos -> el segundo baja a Z2 con disciplina distinta
+// (2) dos días seguidos de la misma disciplina de cardio -> cambia la disciplina del segundo
+function corregirIntensidadYDisciplina(sesiones: any[], perfil: any): void {
+  const lista: string[] = perfil.disciplines?.list || []
+  const cardioDisponible = CARDIO_DISCS.filter(d => lista.includes(d))
+  if (cardioDisponible.length === 0) return
+
+  const esCardio = (s: any) => s && CARDIO_DISCS.includes(s.discipline)
+  const esIntenso = (s: any) => s && (s.planned_zone || 0) >= 4
+  const esEntreno = (s: any) => s && s.day_type === 'training'
+
+  sesiones.sort((a, b) => a.date.localeCompare(b.date))
+
+  for (let i = 1; i < sesiones.length; i++) {
+    const prev = sesiones[i - 1]
+    const cur = sesiones[i]
+    const next = sesiones[i + 1]
+    if (!esEntreno(cur)) continue
+
+    // (1) dos intensos seguidos -> el segundo a Z2, disciplina distinta de la de antes y la de después
+    if (esIntenso(prev) && esIntenso(cur)) {
+      const disc = elegirCardioDistinto(prev.discipline, next?.discipline, cardioDisponible)
+      if (disc) {
+        cur.discipline = disc
+        cur.planned_zone = 2
+        cur.planned_duration = cur.planned_duration || 60
+        cur.planned_load = null
+        const d = construirDescripcionZona(disc, 2, perfil)
+        cur.title = d.title
+        cur.description = d.description
+      }
+      continue
+    }
+
+    // (2) misma disciplina de cardio dos días seguidos -> cambiar la del segundo
+    if (esCardio(prev) && esCardio(cur) && prev.discipline === cur.discipline) {
+      const disc = elegirCardioDistinto(prev.discipline, next?.discipline, cardioDisponible)
+      if (disc) {
+        cur.discipline = disc
+        const d = construirDescripcionZona(disc, cur.planned_zone || 2, perfil)
+        cur.title = d.title
+        cur.description = d.description
+      }
+    }
+  }
+}
+
+// ─── VALIDADOR: forzar descanso si hay 11+ días seguidos sin descansar ───────
+function energiaDelDia(dateStr: string, perfil: any): number {
+  const sp = perfil.schedule_pattern
+  if (!sp?.cycle_start || !sp?.pattern) return 3
+  const pattern: string[] = sp.pattern
+  const shiftEnergy: Record<string, number> = sp.shift_energy || {}
+  const start = new Date(sp.cycle_start + 'T12:00:00')
+  const diff = Math.round((new Date(dateStr + 'T12:00:00').getTime() - start.getTime()) / 86400000)
+  const idx = ((diff % pattern.length) + pattern.length) % pattern.length
+  return shiftEnergy[pattern[idx]] ?? 3
+}
+
+// Cuenta días desde el último descanso; si una racha llega a 11+, mete un descanso.
+// Elige el mejor día de la racha (entre el 8 y el 11) bajando criterios por orden:
+// suave (Z1/Z2/gym, nunca intenso) > energía <3 > pegado a un día duro (Z3/Z4/Z5).
+// Si el elegido es gym, evita dejar un hueco largo hasta el siguiente gym.
+function forzarDescansos(sesiones: any[], perfil: any): void {
+  sesiones.sort((a, b) => a.date.localeCompare(b.date))
+
+  const esIntenso = (s: any) => (s?.planned_zone || 0) >= 3
+  const esGym = (s: any) => typeof s?.discipline === 'string' && s.discipline.startsWith('Fuerza')
+  const esDescanso = (s: any) => s?.day_type === 'rest'
+  const esSuave = (s: any) => s?.day_type === 'training' && (s?.planned_zone || 0) < 3
+
+  const ponerDescanso = (s: any) => {
+    s.discipline = 'Descanso'; s.day_type = 'rest'; s.type = 'rest'
+    s.planned_zone = null; s.planned_duration = null; s.planned_load = null
+    s.title = 'Descanso'; s.description = null
+  }
+
+  const hayGymCerca = (idx: number, radio: number): boolean => {
+    for (let j = Math.max(0, idx - radio); j <= Math.min(sesiones.length - 1, idx + radio); j++) {
+      if (j !== idx && esGym(sesiones[j])) return true
+    }
+    return false
+  }
+
+  let inicioRacha = 0
+  for (let i = 0; i <= sesiones.length; i++) {
+    const s = sesiones[i]
+    if (s && !esDescanso(s)) continue
+
+    // Cierre de racha (descanso encontrado o fin del array)
+    const longitud = i - inicioRacha
+    if (longitud >= 11) {
+      // Candidatos: días 8..11 de la racha (índices relativos 7..10)
+      const desde = inicioRacha + 7
+      const hasta = Math.min(inicioRacha + 10, i - 1)
+      const candidatos: number[] = []
+      for (let k = desde; k <= hasta; k++) candidatos.push(k)
+
+      // Solo días suaves (nunca intensos). Si es gym, que no deje hueco largo de fuerza.
+      const suaves = candidatos.filter(k => esSuave(sesiones[k]) && (!esGym(sesiones[k]) || !hayGymCerca(k, 3)))
+      const pool = suaves.length > 0
+        ? suaves
+        : candidatos.filter(k => esSuave(sesiones[k]))
+
+      if (pool.length > 0) {
+        // Preferir energía <3; entre esos, preferir pegado a un día duro
+        const pegadoADuro = (k: number) =>
+          (k > 0 && esIntenso(sesiones[k - 1])) || (k < sesiones.length - 1 && esIntenso(sesiones[k + 1]))
+        const bajaEnergia = pool.filter(k => energiaDelDia(sesiones[k].date, perfil) < 3)
+        const base = bajaEnergia.length > 0 ? bajaEnergia : pool
+        const conDuro = base.filter(pegadoADuro)
+        const elegido = (conDuro.length > 0 ? conDuro : base)[0]
+        ponerDescanso(sesiones[elegido])
+      }
+    }
+
+    inicioRacha = i + 1
+  }
+}
+
+// Garantiza que todo día de ENTRENAMIENTO tenga esfuerzo previsto (planned_load).
+// Si quedó vacío (p. ej. corregido por un validador y sin baremo), pone un respaldo por zona.
+// Descansos y competiciones no se tocan.
+function asegurarPlannedLoad(sesiones: any[]): void {
+  const fallback: Record<number, number> = { 1: 2, 2: 3, 3: 5, 4: 7, 5: 9 }
+  for (const s of sesiones) {
+    if (s.day_type === 'training' && s.planned_zone && (s.planned_load == null)) {
+      s.planned_load = fallback[s.planned_zone] || 4
+    }
+  }
+}
+
+// ─── VALIDADOR: pre/post competición (corrige solo lo que incumple) ──────────
+// Aplica las mismas reglas que la ventana ±5, a TODAS las competiciones del plan.
+// A: pre -5..-3 = Z2 máx; -2,-1 = Z1/descanso. post +1 = Z1/descanso; +2..+5 = Z2 máx.
+// B: pre -4..-1 = Z2 máx. post +1 = Z1/descanso; +2..+5 = Z2 máx.
+// C: pre -3..-1 = Z2 máx. post +1..+3 = Z2 máx.
+function aplicarPrePostCompeticion(sesiones: any[], competiciones: any[], perfil: any): void {
+  if (!competiciones || competiciones.length === 0) return
+
+  const porFecha: Record<string, any> = {}
+  for (const s of sesiones) {
+    if (s.day_type === 'training') porFecha[s.date] = s
+  }
+
+  const toStr = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+  // Cap de zona permitido para cada offset; null = ese día no está regulado
+  const capPara = (importancia: string, offset: number): number | null => {
+    if (importancia === 'A') {
+      if (offset >= -5 && offset <= -3) return 2
+      if (offset === -2 || offset === -1) return 1
+      if (offset === 1) return 1
+      if (offset >= 2 && offset <= 5) return 2
+    } else if (importancia === 'B') {
+      if (offset >= -4 && offset <= -1) return 2
+      if (offset === 1) return 1
+      if (offset >= 2 && offset <= 5) return 2
+    } else {
+      if (offset >= -3 && offset <= -1) return 2
+      if (offset >= 1 && offset <= 3) return 2
+    }
+    return null
+  }
+
+  // Mapa fecha -> sesión (cualquier tipo, para poder forzar descanso)
+  const porFechaTodo: Record<string, any> = {}
+  for (const s of sesiones) porFechaTodo[s.date] = s
+
+  const ponerDescanso = (s: any) => {
+    s.discipline = 'Descanso'; s.day_type = 'rest'; s.type = 'rest'
+    s.planned_zone = null; s.planned_duration = null; s.planned_load = null
+    s.title = 'Descanso'; s.description = null
+  }
+
+  // Descanso OBLIGATORIO la víspera (-1) y el día siguiente (+1) de toda competición
+  for (const comp of competiciones) {
+    const base = new Date(comp.date + 'T12:00:00')
+    for (const offset of [-1, 1]) {
+      const d = new Date(base); d.setDate(d.getDate() + offset)
+      const s = porFechaTodo[toStr(d)]
+      if (s && s.day_type !== 'competition') ponerDescanso(s)
+    }
+  }
+
+  for (const comp of competiciones) {
+    const importancia = comp.competition_importance || 'B'
+    const base = new Date(comp.date + 'T12:00:00')
+
+    for (let offset = -5; offset <= 5; offset++) {
+      if (offset === 0) continue
+      const cap = capPara(importancia, offset)
+      if (cap == null) continue
+
+      const d = new Date(base)
+      d.setDate(d.getDate() + offset)
+      const s = porFecha[toStr(d)]
+      if (!s) continue
+
+      const zona = s.planned_zone || 0
+      if (zona === 0 || zona <= cap) continue // gym/suave/ya cumple: no tocar
+
+      // Incumple: bajar a 'cap'
+      s.planned_zone = cap
+      s.planned_duration = s.planned_duration || (cap <= 1 ? 30 : 45)
+      s.planned_load = null
+      if (cap <= 1) {
+        s.title = `${s.discipline} Z1 — descarga pre/post competición`
+        s.description = 'Sesión muy suave de descarga. Piernas sueltas, sin forzar.'
+      } else {
+        const desc = construirDescripcionZona(s.discipline, cap, perfil)
+        s.title = desc.title
+        s.description = desc.description
+      }
+    }
+  }
+}
+
+// ─── VALIDADOR: fuerza de pierna fuera de temporada (abr-sep) ────────────────
+// Tren inferior solo permitido oct-mar. Si cae en abr-sep, se cambia a tren
+// superior (A o B, alternando con la última sesión de superior). Mantiene el día de gym.
+function corregirFuerzaEstacional(sesiones: any[]): void {
+  sesiones.sort((a, b) => a.date.localeCompare(b.date))
+  let ultimoSuperior: 'A' | 'B' | null = null
+  for (const s of sesiones) {
+    if (s.day_type !== 'training') continue
+    const disc = s.discipline || ''
+    if (disc === 'Fuerza tren superior A') { ultimoSuperior = 'A'; continue }
+    if (disc === 'Fuerza tren superior B') { ultimoSuperior = 'B'; continue }
+    if (disc === 'Fuerza tren inferior') {
+      const mes = parseInt(s.date.slice(5, 7), 10)
+      if (mes >= 4 && mes <= 9) {
+        const nuevo: 'A' | 'B' = ultimoSuperior === 'A' ? 'B' : 'A'
+        s.discipline = nuevo === 'A' ? 'Fuerza tren superior A' : 'Fuerza tren superior B'
+        s.title = s.discipline
+        s.description = nuevo === 'A'
+          ? 'Fuerza de tren superior: dorsal y tríceps.'
+          : 'Fuerza de tren superior: hombro y pecho.'
+        ultimoSuperior = nuevo
+      }
+    }
+  }
+}
+
+// ─── VALIDADOR: separación mínima entre sesiones intensas (Z4/Z5) ────────────
+// Exige al menos 2 días entre dos intensas (un solo día de por medio no basta).
+// La segunda intensa demasiado pegada se baja a Z2 con disciplina distinta.
+function forzarSeparacionIntensas(sesiones: any[], perfil: any): void {
+  const lista: string[] = perfil.disciplines?.list || []
+  const cardioDisponible = CARDIO_DISCS.filter(d => lista.includes(d))
+  sesiones.sort((a, b) => a.date.localeCompare(b.date))
+
+  const esIntenso = (s: any) => s && s.day_type === 'training' && (s.planned_zone || 0) >= 3
+  const diasEntre = (a: string, b: string) =>
+    Math.round((new Date(b + 'T12:00:00').getTime() - new Date(a + 'T12:00:00').getTime()) / 86400000)
+
+  let ultimaIntensa: string | null = null
+  for (let i = 0; i < sesiones.length; i++) {
+    const s = sesiones[i]
+    if (!esIntenso(s)) continue
+
+    if (ultimaIntensa && diasEntre(ultimaIntensa, s.date) <= 2) {
+      // Demasiado pegada: bajar a Z2, disciplina distinta de la de antes y después
+      const prev = sesiones[i - 1]
+      const next = sesiones[i + 1]
+      const disc = cardioDisponible.length > 0
+        ? (elegirCardioDistinto(prev?.discipline, next?.discipline, cardioDisponible) || s.discipline)
+        : s.discipline
+      s.discipline = disc
+      s.planned_zone = 2
+      s.planned_duration = s.planned_duration || 60
+      s.planned_load = null
+      const d = construirDescripcionZona(disc, 2, perfil)
+      s.title = d.title
+      s.description = d.description
+      // no actualizamos ultimaIntensa: este día ya no es intenso
+    } else {
+      ultimaIntensa = s.date
+    }
+  }
+}
+
+// ─── VALIDADOR: intensidad corta permitida en días de Trabajo (W) ────────────
+// En días W se permite intensidad (Z3+) solo si es corta: Running <=45min,
+// Bici carretera <=90min, y como mucho 2 intensas por bloque de 7 días de Trabajo.
+// Lo que incumple se recorta (duración) o se baja a Z2.
+function aplicarReglasDiaTrabajo(sesiones: any[], perfil: any): void {
+  const sp = perfil.schedule_pattern
+  if (!sp?.cycle_start || !sp?.pattern) return
+  const pattern: string[] = sp.pattern
+  const start = new Date(sp.cycle_start + 'T12:00:00')
+  const turnoDe = (dateStr: string) => {
+    const diff = Math.round((new Date(dateStr + 'T12:00:00').getTime() - start.getTime()) / 86400000)
+    return pattern[((diff % pattern.length) + pattern.length) % pattern.length]
+  }
+
+  sesiones.sort((a, b) => a.date.localeCompare(b.date))
+
+  const esIntenso = (s: any) => s && s.day_type === 'training' && (s.planned_zone || 0) >= 3
+  const diasEntre = (a: string, b: string) =>
+    Math.abs(Math.round((new Date(b + 'T12:00:00').getTime() - new Date(a + 'T12:00:00').getTime()) / 86400000))
+  const bajarAZ2 = (s: any) => {
+    const disc = s.discipline
+    s.planned_zone = 2
+    s.planned_duration = s.planned_duration || 60
+    s.planned_load = null
+    const d = construirDescripcionZona(disc, 2, perfil)
+    s.title = d.title
+    s.description = d.description
+  }
+
+  // ── FASE 1: recortar/quitar la intensidad de los W que incumpla ──
+  let intensasEnBloque = 0
+  for (const s of sesiones) {
+    const turno = turnoDe(s.date)
+    if (turno !== 'W') { intensasEnBloque = 0; continue }
+    if (!esIntenso(s)) continue
+
+    const disc = s.discipline || ''
+    if (disc !== 'Running' && disc !== 'Bici carretera') {
+      bajarAZ2(s)
+      continue
+    }
+    if (disc === 'Running' && (s.planned_duration || 0) > 45) s.planned_duration = 45
+    if (disc === 'Bici carretera' && (s.planned_duration || 0) > 90) s.planned_duration = 90
+    intensasEnBloque++
+    if (intensasEnBloque > 2) {
+      bajarAZ2(s)
+      intensasEnBloque--
+    }
+  }
+
+  // ── FASE 2: inyectar intensidad corta en días W si la IA no metió ──
+  // Respeta separación de 2 días con cualquier intensa (libre o trabajo) y máx 2 por bloque.
+  const haySeparacion = (fecha: string) =>
+    sesiones.filter(esIntenso).every(x => x.date === fecha || diasEntre(x.date, fecha) >= 3)
+
+  const procesarBloque = (dias: any[]) => {
+    let count = dias.filter(esIntenso).length
+    for (const s of dias) {
+      if (count >= 2) break
+      if (esIntenso(s)) continue
+      const disc = s.discipline || ''
+      if (disc !== 'Running' && disc !== 'Bici carretera') continue
+      if (!haySeparacion(s.date)) continue
+      s.planned_zone = 4
+      s.planned_duration = disc === 'Running' ? 45 : 90
+      s.planned_load = null
+      const d = construirDescripcionZona(disc, 4, perfil)
+      s.title = `${d.title} (corta, día de trabajo)`
+      s.description = d.description
+      count++
+    }
+  }
+
+  let bloque: any[] = []
+  for (const s of sesiones) {
+    if (turnoDe(s.date) === 'W') {
+      bloque.push(s)
+    } else {
+      if (bloque.length) procesarBloque(bloque)
+      bloque = []
+    }
+  }
+  if (bloque.length) procesarBloque(bloque)
+}
+
+// ─── VALIDADOR: separar descansos demasiado próximos ─────────────────────────
+// Entre dos descansos debe haber al menos 4 días de entrenamiento (descanso, 4 entrenos, descanso).
+// Si dos descansos quedan más cerca, el SEGUNDO se convierte en sesión suave,
+// salvo que ese segundo descanso proteja una competición (ventana pre/post): esos son intocables.
+function separarDescansos(sesiones: any[], competiciones: any[], perfil: any): void {
+  sesiones.sort((a, b) => a.date.localeCompare(b.date))
+
+  const esDescanso = (s: any) => s?.day_type === 'rest'
+  const lista: string[] = perfil.disciplines?.list || []
+  const cardioDisponible = CARDIO_DISCS.filter(d => lista.includes(d))
+
+  const diasEntre = (a: string, b: string) =>
+    Math.round((new Date(b + 'T12:00:00').getTime() - new Date(a + 'T12:00:00').getTime()) / 86400000)
+
+  // ¿Este descanso protege una competición? (dentro de su ventana pre/post según A/B/C)
+  const protegeCompeticion = (fecha: string) => {
+    for (const c of competiciones) {
+      const off = diasEntre(c.date, fecha) // negativo = antes, positivo = después
+      const imp = c.competition_importance || 'B'
+     const pre = imp === 'A' ? 5 : imp === 'B' ? 4 : 3
+     const post = imp === 'C' ? 3 : 5
+      if (off < 0 && off >= -pre) return true
+      if (off > 0 && off <= post) return true
+    }
+    return false
+  }
+
+  const convertirEnSuave = (s: any, prevDisc?: string, nextDisc?: string) => {
+    const disc = cardioDisponible.length > 0
+      ? (elegirCardioDistinto(prevDisc, nextDisc, cardioDisponible) || cardioDisponible[0])
+      : null
+    if (!disc) return
+    s.discipline = disc
+    s.day_type = 'training'; s.type = 'training'
+    s.planned_zone = 2
+    s.planned_duration = 60
+    s.planned_load = null
+    const d = construirDescripcionZona(disc, 2, perfil)
+    s.title = d.title
+    s.description = d.description
+  }
+
+  let ultimoDescanso: string | null = null
+  for (let i = 0; i < sesiones.length; i++) {
+    const s = sesiones[i]
+    if (!esDescanso(s)) continue
+
+    if (ultimoDescanso && diasEntre(ultimoDescanso, s.date) < 5) {
+      // Demasiado cerca del anterior. Si protege competición, intocable: pasa a ser el nuevo ancla.
+      if (protegeCompeticion(s.date)) {
+        ultimoDescanso = s.date
+        continue
+      }
+      // Si no, se convierte en sesión suave (quitamos el segundo)
+      convertirEnSuave(s, sesiones[i - 1]?.discipline, sesiones[i + 1]?.discipline)
+      // ultimoDescanso no cambia
+    } else {
+      ultimoDescanso = s.date
+    }
+  }
+}
 
 export async function generarPlanAction(
   perfil: any,
@@ -324,6 +787,15 @@ Genera el plan completo día a día del ${fechaInicio} al ${fechaFin}:`
     }
   }
 
+  // Corrección de intensidad/disciplina (dos intensos seguidos o cardio repetido)
+  corregirIntensidadYDisciplina(sesiones, perfil)
+  corregirFuerzaEstacional(sesiones)
+  aplicarReglasDiaTrabajo(sesiones, perfil)
+  forzarSeparacionIntensas(sesiones, perfil)
+  aplicarPrePostCompeticion(sesiones, competiciones, perfil)
+  separarDescansos(sesiones, competiciones, perfil)
+  forzarDescansos(sesiones, perfil)
+
   const { calcularPlannedLoad } = await import('@/lib/fatigaService')
   const { data: { session: authSession } } = await (await import('@/lib/supabase')).supabase.auth.getSession()
   if (authSession) {
@@ -334,6 +806,9 @@ Genera el plan completo día a día del ${fechaInicio} al ${fechaFin}:`
       }
     }
   }
+
+  // Asegurar esfuerzo previsto en todos los entrenamientos (incluidos los tocados por validadores)
+  asegurarPlannedLoad(sesiones)
 
   return { sesiones }
 }
@@ -441,6 +916,30 @@ Genera el plan del ${hoy} al ${fechaFin}:`
       }
     }
   }
+
+  // Corrección de intensidad/disciplina (dos intensos seguidos o cardio repetido)
+  corregirIntensidadYDisciplina(nuevasSesiones, perfil)
+  corregirFuerzaEstacional(nuevasSesiones)
+  aplicarReglasDiaTrabajo(nuevasSesiones, perfil)
+  forzarSeparacionIntensas(nuevasSesiones, perfil)
+  aplicarPrePostCompeticion(nuevasSesiones, competiciones, perfil)
+  separarDescansos(nuevasSesiones, competiciones, perfil)
+  forzarDescansos(nuevasSesiones, perfil)
+
+  // Recalcular esfuerzo previsto tras los validadores (igual que en generarPlanAction)
+  const { calcularPlannedLoad } = await import('@/lib/fatigaService')
+  const { data: { session: authSession } } = await (await import('@/lib/supabase')).supabase.auth.getSession()
+  if (authSession) {
+    for (const s of nuevasSesiones) {
+      if (s.day_type === 'training' && s.planned_zone && s.planned_duration) {
+        const load = await calcularPlannedLoad(authSession.user.id, s.discipline, s.planned_zone, s.planned_duration)
+        if (load !== null) s.planned_load = load
+      }
+    }
+  }
+
+  // Asegurar esfuerzo previsto en todos los entrenamientos (incluidos los tocados por validadores)
+  asegurarPlannedLoad(nuevasSesiones)
 
   return { sesiones: nuevasSesiones }
 }

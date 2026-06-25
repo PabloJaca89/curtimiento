@@ -37,6 +37,7 @@ const SHIFT_STYLES: Record<string, { label: string; bg: string; text: string }> 
   'N': { label: 'N', bg: 'bg-blue-800/30',   text: 'text-blue-200' },
   'S': { label: 'S', bg: 'bg-yellow-900/30', text: 'text-yellow-600' },
   'L': { label: 'L', bg: 'bg-yellow-900/10', text: 'text-yellow-700' },
+  'W': { label: 'W', bg: 'bg-indigo-600/30', text: 'text-indigo-300' },
 }
 
 function calcularTurno(dateStr: string, schedulePattern: any): string | null {
@@ -94,13 +95,14 @@ interface Session {
 interface Props {
   currentDate: Date; sessions: Session[]; onRefresh: () => void; schedulePattern?: any
   onCompetitionAdded?: (competicion: any) => void
+  view?: 'month' | 'week'
 }
 
 function toDateStr(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
-export default function CalendarMonth({ currentDate, sessions, onRefresh, schedulePattern, onCompetitionAdded }: Props) {
+export default function CalendarMonth({ currentDate, sessions, onRefresh, schedulePattern, onCompetitionAdded, view = 'month' }: Props) {
   const [showModal, setShowModal] = useState(false)
   const [modalDate, setModalDate] = useState<string>('')
   const [modalSession, setModalSession] = useState<Session | null>(null)
@@ -111,18 +113,25 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh, schedu
   const [showMoveModal, setShowMoveModal] = useState(false)
   const [moveTarget, setMoveTarget] = useState<string | null>(null)
 
-  const year = currentDate.getFullYear()
-  const month = currentDate.getMonth()
-  const firstDay = new Date(year, month, 1)
-  const lastDay = new Date(year, month + 1, 0)
-
-  let startDow = firstDay.getDay() - 1
-  if (startDow < 0) startDow = 6
-
+  const detailed = view === 'week'
   const days: (Date | null)[] = []
-  for (let i = 0; i < startDow; i++) days.push(null)
-  for (let d = 1; d <= lastDay.getDate(); d++) days.push(new Date(year, month, d))
-  while (days.length % 7 !== 0) days.push(null)
+  if (detailed) {
+    const base = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate())
+    const dow = base.getDay()
+    const diff = dow === 0 ? 6 : dow - 1
+    const lunes = new Date(base); lunes.setDate(base.getDate() - diff)
+    for (let i = 0; i < 7; i++) days.push(new Date(lunes.getFullYear(), lunes.getMonth(), lunes.getDate() + i))
+  } else {
+    const year = currentDate.getFullYear()
+    const month = currentDate.getMonth()
+    const firstDay = new Date(year, month, 1)
+    const lastDay = new Date(year, month + 1, 0)
+    let startDow = firstDay.getDay() - 1
+    if (startDow < 0) startDow = 6
+    for (let i = 0; i < startDow; i++) days.push(null)
+    for (let d = 1; d <= lastDay.getDate(); d++) days.push(new Date(year, month, d))
+    while (days.length % 7 !== 0) days.push(null)
+  }
 
   const today = toDateStr(new Date())
   const getSessionsForDay = (date: Date) => sessions.filter(s => s.date === toDateStr(date))
@@ -197,7 +206,7 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh, schedu
 
       <div className="grid grid-cols-7 gap-1">
         {days.map((day, idx) => {
-          if (!day) return <div key={idx} className="min-h-[80px]" />
+          if (!day) return <div key={idx} className={detailed ? 'min-h-[180px]' : 'min-h-[80px]'} />
           const dateStr = toDateStr(day)
           const daySessions = getSessionsForDay(day)
           const isToday = dateStr === today
@@ -212,13 +221,18 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh, schedu
               onDragOver={e => handleDragOver(e, dateStr)}
               onDragLeave={handleDragLeave}
               onDrop={e => handleDrop(e, dateStr)}
-              className={`min-h-[80px] bg-gray-900 rounded-xl p-2 border cursor-pointer transition
+              className={`${detailed ? 'min-h-[180px]' : 'min-h-[80px]'} bg-gray-900 rounded-xl p-2 border cursor-pointer transition
                 ${isToday ? 'border-blue-500' : isDragOver ? 'border-purple-400 bg-purple-900/20' : 'border-gray-800'}
                 ${isPast && !isToday ? 'opacity-70' : ''}
                 hover:border-blue-500`}>
               <div className="flex items-center justify-between mb-1">
-                <div className={`text-xs font-medium ${isToday ? 'text-blue-400' : 'text-gray-500'}`}>
-                  {day.getDate()}
+                <div className="flex items-center gap-0.5">
+                  <div className={`text-xs font-medium ${isToday ? 'text-blue-400' : 'text-gray-500'}`}>
+                    {day.getDate()}
+                  </div>
+                  {daySessions.filter(s => s.completed).map((s, i) => (
+                    <span key={`tick-${s.id}-${i}`} className="text-green-400 text-xs leading-none" title="Sesión completada">✓</span>
+                  ))}
                 </div>
                 {turnoStyle && (
                   <span className={`text-xs font-bold px-1 rounded ${turnoStyle.bg} ${turnoStyle.text}`}>
@@ -236,7 +250,8 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh, schedu
                       draggable={!isComp}
                       onDragStart={e => !isComp && handleDragStart(e, s)}
                       onClick={e => handleSessionClick(e, s)}
-                      className={`text-xs px-1.5 py-1 rounded-md ${colors.bg} ${colors.text} truncate
+                      className={`text-xs px-1.5 py-1 rounded-md ${colors.bg} ${colors.text} ${detailed ? '' : 'truncate'}
+                        transition hover:ring-2 hover:ring-white/40
                         ${isComp ? 'border border-red-500' : 'cursor-grab active:cursor-grabbing'}
                         ${s.completed ? 'opacity-60' : ''}
                         ${dragSession?.id === s.id ? 'opacity-40' : ''}`}>
@@ -248,7 +263,7 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh, schedu
                         {s.planned_load && (
                           <span className="text-xs opacity-60 font-mono">{s.planned_load}</span>
                         )}
-                        <span className="truncate">
+                        <span className={detailed ? 'font-medium' : 'truncate'}>
                           {isComp && s.competition_importance && (
                             <span className="mr-0.5">
                               {s.competition_importance === 'A' ? '★' : s.competition_importance === 'B' ? '◆' : '●'}
@@ -257,6 +272,14 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh, schedu
                           {s.completed ? '✓ ' : ''}{s.title || disc}
                         </span>
                       </div>
+                      {detailed && (s.planned_zone || s.planned_duration) && (
+                        <div className="text-[10px] opacity-70 mt-0.5">
+                          {s.planned_zone ? `Z${s.planned_zone}` : ''}{s.planned_zone && s.planned_duration ? ' · ' : ''}{s.planned_duration ? `${s.planned_duration} min` : ''}
+                        </div>
+                      )}
+                      {detailed && s.description && (
+                        <div className="text-[10px] opacity-60 mt-0.5 leading-snug">{s.description}</div>
+                      )}
                     </div>
                   )
                 })}

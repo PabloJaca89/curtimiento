@@ -15,28 +15,29 @@ const EQUIPMENT = [
 
 const SHIFT_TYPES = ['Libre', 'Mañanas', 'Tardes', 'Noches', 'Saliente']
 const ROTATING_PATTERN = ['M','M','T','T','N','N','S','L','L','L','L','L']
+const GUARD_PATTERN = ['W','W','W','W','W','W','W','L','L','L','L','L','L','L','L','L','L','L','L','L','L']
 const SHIFT_LABELS: Record<string, string> = {
-  'M': 'Mañanas', 'T': 'Tardes', 'N': 'Noches', 'S': 'Saliente', 'L': 'Libre'
+  'M': 'Mañanas', 'T': 'Tardes', 'N': 'Noches', 'S': 'Saliente', 'L': 'Libre', 'W': 'Trabajo'
 }
 const SCHEDULE_TYPES = [
   { id: 'rotating', label: 'Turno rotatorio', desc: '6x6 — MMTTNN + 1 saliente + 5 libres' },
-  { id: 'office', label: 'Lunes a viernes', desc: 'Fines de semana libres' }
+  { id: 'office', label: 'Lunes a viernes', desc: 'Fines de semana libres' },
+  { id: 'guard714', label: '7 trabajados / 14 libres', desc: '7 días de trabajo seguidos + 14 libres' }
 ]
 
 function calcularCycleStart(dayIndex: number): string {
   const today = new Date()
-  const start = new Date(today)
-  start.setDate(today.getDate() - dayIndex)
-  return start.toISOString().split('T')[0]
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - dayIndex)
+  return `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`
 }
 
-function calcularCycleDayDesdeStart(cycleStart: string): number | null {
+function calcularCycleDayDesdeStart(cycleStart: string, cycleLength: number = 12): number | null {
   if (!cycleStart) return null
   const start = new Date(cycleStart + 'T12:00:00')
   const today = new Date()
   today.setHours(12, 0, 0, 0)
   const diff = Math.round((today.getTime() - start.getTime()) / 86400000)
-  return ((diff % 12) + 12) % 12
+  return ((diff % cycleLength) + cycleLength) % cycleLength
 }
 
 export default function PerfilPage() {
@@ -57,7 +58,7 @@ export default function PerfilPage() {
   const [scheduleType, setScheduleType] = useState('')
   const [cycleDay, setCycleDay] = useState<number | null>(null)
   const [shiftEnergy, setShiftEnergy] = useState<Record<string, number>>({
-    Libre: 5, Mañanas: 2, Tardes: 4, Noches: 3, Saliente: 3
+    Libre: 5, Mañanas: 2, Tardes: 4, Noches: 3, Saliente: 3, Trabajo: 2
   })
 
   const [disciplines, setDisciplines] = useState<string[]>([])
@@ -122,10 +123,12 @@ export default function PerfilPage() {
               Tardes:   sp.shift_energy.T ?? 4,
               Noches:   sp.shift_energy.N ?? 3,
               Saliente: sp.shift_energy.S ?? 3,
+              Trabajo:  sp.shift_energy.W ?? 2,
             })
           }
           if (sp.cycle_start) {
-            const dayIdx = calcularCycleDayDesdeStart(sp.cycle_start)
+            const len = sp.pattern?.length || 12
+            const dayIdx = calcularCycleDayDesdeStart(sp.cycle_start, len)
             setCycleDay(dayIdx)
           }
         }
@@ -144,6 +147,17 @@ export default function PerfilPage() {
   }
 
   const buildSchedulePattern = () => {
+    if (scheduleType === 'guard714' && cycleDay !== null) {
+      return {
+        type: 'guard714',
+        cycle_start: calcularCycleStart(cycleDay),
+        pattern: GUARD_PATTERN,
+        shift_energy: {
+          W: shiftEnergy['Trabajo'],
+          L: shiftEnergy['Libre'],
+        }
+      }
+    }
     if (scheduleType === 'rotating' && cycleDay !== null) {
       return {
         type: 'rotating',
@@ -291,7 +305,7 @@ export default function PerfilPage() {
               <label className={labelClass}>Tipo de cadencia laboral</label>
               <div className="flex flex-col gap-3 mt-2">
                 {SCHEDULE_TYPES.map(st => (
-                  <button key={st.id} onClick={() => setScheduleType(st.id)}
+                  <button key={st.id} onClick={() => { setScheduleType(st.id); setCycleDay(null) }}
                     className={`flex flex-col items-start px-4 py-3 rounded-xl border transition text-left ${
                       scheduleType === st.id ? 'bg-blue-600 border-blue-600' : 'bg-gray-800 border-gray-700 hover:border-blue-500'}`}>
                     <span className="font-medium text-sm">{st.label}</span>
@@ -325,10 +339,34 @@ export default function PerfilPage() {
               </div>
             )}
 
+            {scheduleType === 'guard714' && (
+              <div>
+                <label className={labelClass}>¿En qué día del ciclo estás hoy?</label>
+                <p className="text-xs text-gray-500 mb-3">7 días de Trabajo (W) + 14 Libres (L). Selecciona el día de hoy.</p>
+                <div className="grid grid-cols-7 gap-1">
+                  {GUARD_PATTERN.map((shift, idx) => (
+                    <button key={idx} onClick={() => setCycleDay(idx)}
+                      className={`flex flex-col items-center py-2 px-1 rounded-lg border text-xs transition ${
+                        cycleDay === idx
+                          ? 'bg-blue-600 border-blue-600 text-white'
+                          : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-blue-500'}`}>
+                      <span className="font-bold">{shift}</span>
+                      <span className="text-gray-500 text-xs">{idx + 1}</span>
+                    </button>
+                  ))}
+                </div>
+                {cycleDay !== null && (
+                  <p className="text-xs text-blue-400 mt-2">
+                    Hoy: día {cycleDay + 1} del ciclo — {SHIFT_LABELS[GUARD_PATTERN[cycleDay]]}
+                  </p>
+                )}
+              </div>
+            )}
+
             <div>
               <label className={labelClass}>Energía disponible por tipo de jornada</label>
               <div className="space-y-2 mt-2">
-                {SHIFT_TYPES.map(shift => (
+                {(scheduleType === 'guard714' ? ['Trabajo', 'Libre'] : SHIFT_TYPES).map(shift => (
                   <div key={shift} className="flex items-center justify-between bg-gray-800 rounded-xl px-4 py-3">
                     <span className="text-sm text-gray-300 w-24">{shift}</span>
                     <div className="flex gap-2">

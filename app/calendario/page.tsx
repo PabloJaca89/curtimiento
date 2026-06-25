@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import { generarPlanAction, recalcularPlanAction, chatAsistenteAction, ajustarVentanaCompeticionAction } from './actions'
-import { calcularCargaAlostatica } from '@/lib/fatigaService'
+import { calcularCargaAlostatica, actualizarDurezaSemanal, obtenerDurezaSemanal } from '@/lib/fatigaService'
 import CalendarMonth from '@/components/calendar/CalendarMonth'
 
 export default function CalendarioPage() {
@@ -13,6 +13,9 @@ export default function CalendarioPage() {
   const [perfil, setPerfil] = useState<any>(null)
   const [userId, setUserId] = useState<string>('')
   const [ca, setCa] = useState<any>(null)
+  const [durezas, setDurezas] = useState<any[]>([])
+  const [durezaAbierta, setDurezaAbierta] = useState(false)
+  const [sinSaldo, setSinSaldo] = useState(false)
   const [planGenerado, setPlanGenerado] = useState(false)
   const [generando, setGenerando] = useState(false)
   const [showConfirmRecalc, setShowConfirmRecalc] = useState(false)
@@ -69,6 +72,11 @@ export default function CalendarioPage() {
     const caHoy = await calcularCargaAlostatica(session.user.id, null)
     setCa(caHoy)
 
+    // Dureza experimentada: calcula ventanas cerradas pendientes y lee las últimas 4
+    await actualizarDurezaSemanal(session.user.id, null)
+    const durs = await obtenerDurezaSemanal(session.user.id, 4)
+    setDurezas(durs || [])
+
     setLoading(false)
   }
 
@@ -101,7 +109,8 @@ export default function CalendarioPage() {
         setPlanGenerado(true)
         await fetchData()
       }
-    } catch (err) {
+    } catch (err: any) {
+      if (String(err?.message || err).includes('SALDO_INSUFICIENTE')) setSinSaldo(true)
       console.error('Error generando plan:', err)
     }
     setGenerando(false)
@@ -139,7 +148,8 @@ export default function CalendarioPage() {
         await supabase.from('sessions').insert(nuevasSesiones)
         await fetchData()
       }
-    } catch (err) {
+    } catch (err: any) {
+      if (String(err?.message || err).includes('SALDO_INSUFICIENTE')) setSinSaldo(true)
       console.error('Error recalculando plan:', err)
     }
     setGenerando(false)
@@ -258,6 +268,12 @@ export default function CalendarioPage() {
   const nextMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1))
   const monthName = currentDate.toLocaleString('es-ES', { month: 'long', year: 'numeric' })
 
+  const durezaColor = (n: number) =>
+    n >= 8 ? 'text-red-400' : n >= 6 ? 'text-orange-400' : n >= 4 ? 'text-yellow-400' : 'text-green-400'
+  const fmtSemana = (iso: string) =>
+    new Date(iso + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })
+  const ultimaDureza = durezas[0] || null
+
   const caColor = ca
     ? ca.ca <= 2.0 ? 'text-green-400'
     : ca.ca <= 3.0 ? 'text-blue-400'
@@ -283,6 +299,34 @@ export default function CalendarioPage() {
                 <span className="text-gray-500">CA </span>
                 <span className={`font-bold ${caColor}`}>{ca.ca}</span>
                 <span className="text-gray-500 text-xs ml-1">— {ca.estado}</span>
+              </div>
+            )}
+            {ultimaDureza && (
+              <div className="relative">
+                <button onClick={() => setDurezaAbierta(v => !v)}
+                  className="bg-gray-900 border border-gray-800 hover:border-gray-600 rounded-xl px-3 py-2 text-sm transition flex items-center gap-1">
+                  <span className="text-gray-500">Dureza </span>
+                  <span className={`font-bold ${durezaColor(ultimaDureza.nota)}`}>{ultimaDureza.nota}</span>
+                  <span className="text-gray-500 text-xs">/10</span>
+                  <span className="text-gray-600 text-xs ml-1">▾</span>
+                </button>
+                {durezaAbierta && (
+                  <div className="absolute right-0 mt-2 w-60 bg-gray-900 border border-gray-800 rounded-xl p-3 z-50 shadow-2xl">
+                    <div className="text-xs text-gray-400 mb-2">Dureza experimentada (últimas semanas)</div>
+                    <div className="space-y-1.5">
+                      {durezas.map((d, i) => (
+                        <div key={i} className="flex items-center justify-between text-sm">
+                          <span className="text-gray-500 text-xs">Semana del {fmtSemana(d.semana_inicio)}</span>
+                          <span className="flex items-center gap-2">
+                            <span className={`font-bold ${durezaColor(d.nota)}`}>{d.nota}</span>
+                            <span className="text-gray-600 text-xs">({d.num_sesiones} ses.)</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="text-xs text-gray-600 mt-2 pt-2 border-t border-gray-800">10 = muy dura · 1 = muy suave</div>
+                  </div>
+                )}
               </div>
             )}
             <div className="flex bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
@@ -407,6 +451,22 @@ export default function CalendarioPage() {
                 Sí, ajustar
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {sinSaldo && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 rounded-2xl w-full max-w-md border border-red-900 p-6">
+            <h3 className="font-semibold text-lg mb-2 text-red-400">⚠️ Sin saldo en la API</h3>
+            <p className="text-gray-300 text-sm mb-4">
+              No se ha podido generar el plan porque la cuenta de Anthropic no tiene saldo suficiente.
+              Recarga saldo en el panel de Anthropic (Plans &amp; Billing) y vuelve a intentarlo.
+            </p>
+            <button onClick={() => setSinSaldo(false)}
+              className="w-full bg-blue-600 hover:bg-blue-700 py-3 rounded-xl text-sm font-medium transition">
+              Entendido
+            </button>
           </div>
         </div>
       )}

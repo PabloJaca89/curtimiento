@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { generarPlanAction, recalcularPlanAction, chatAsistenteAction, ajustarVentanaCompeticionAction } from './actions'
 import { calcularCargaAlostatica, actualizarDurezaSemanal, obtenerDurezaSemanal } from '@/lib/fatigaService'
@@ -32,10 +32,10 @@ export default function CalendarioPage() {
   const [cargandoChat, setCargandoChat] = useState(false)
   const chatEndRef = useRef<HTMLDivElement>(null)
 
-  const fetchData = async () => {
-    setLoading(true)
+  const fetchData = useCallback(async () => {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) return
+    setLoading(true)
 
     setUserId(session.user.id)
 
@@ -54,12 +54,22 @@ export default function CalendarioPage() {
       .limit(1)
     setPlanGenerado(!!(haySesiones && haySesiones.length > 0))
 
-    // Calcular fechas del mes sin depender de toISOString (evita bug de zona horaria)
-    const y = currentDate.getFullYear()
-    const m = currentDate.getMonth()
-    const startStr = `${y}-${String(m + 1).padStart(2, '0')}-01`
-    const lastDay = new Date(y, m + 1, 0).getDate()
-    const endStr = `${y}-${String(m + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+    // Rango según la vista (mes completo o semana lunes-domingo). Sin toISOString (zona horaria).
+    const toS = (x: Date) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
+    let startStr: string, endStr: string
+    if (view === 'week') {
+      const d = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate())
+      const dow = d.getDay(); const diff = dow === 0 ? 6 : dow - 1
+      const lunes = new Date(d); lunes.setDate(d.getDate() - diff)
+      const domingo = new Date(lunes); domingo.setDate(lunes.getDate() + 6)
+      startStr = toS(lunes); endStr = toS(domingo)
+    } else {
+      const y = currentDate.getFullYear()
+      const m = currentDate.getMonth()
+      startStr = `${y}-${String(m + 1).padStart(2, '0')}-01`
+      const lastDay = new Date(y, m + 1, 0).getDate()
+      endStr = `${y}-${String(m + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+    }
 
     const { data: s } = await supabase
       .from('sessions')
@@ -78,9 +88,10 @@ export default function CalendarioPage() {
     setDurezas(durs || [])
 
     setLoading(false)
-  }
+  }, [currentDate, view])
 
-  useEffect(() => { fetchData() }, [currentDate])
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { fetchData() }, [fetchData])
   useEffect(() => {
     if (chatAbierto) chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [mensajesChat, chatAbierto])
@@ -100,15 +111,35 @@ export default function CalendarioPage() {
 
       const resultado = await generarPlanAction(perfil, competiciones || [], hoy, fechaFin, instruccionesLibres)
 
-      if (resultado?.sesiones) {
-        const fechasConCompeticion = new Set((competiciones || []).map((c: any) => c.date))
-        const nuevasSesiones = resultado.sesiones
-          .filter((s: any) => !fechasConCompeticion.has(s.date))
-          .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
-        await supabase.from('sessions').insert(nuevasSesiones)
-        setPlanGenerado(true)
-        await fetchData()
+      if (!resultado?.sesiones || resultado.sesiones.length === 0) {
+        console.error('Generación abortada: la IA no devolvió sesiones.')
+        alert('No se pudo generar el plan (la IA no devolvió sesiones). Inténtalo de nuevo.')
+        setGenerando(false)
+        return
       }
+
+      const fechasConCompeticion = new Set((competiciones || []).map((c: any) => c.date))
+      const nuevasSesiones = resultado.sesiones
+        .filter((s: any) => !fechasConCompeticion.has(s.date))
+        .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
+
+      if (nuevasSesiones.length === 0) {
+        console.error('Generación abortada: 0 sesiones tras filtrar competiciones.')
+        alert('No se pudo generar el plan. Inténtalo de nuevo.')
+        setGenerando(false)
+        return
+      }
+
+      const { error: errorInsert } = await supabase.from('sessions').insert(nuevasSesiones)
+      if (errorInsert) {
+        console.error('Error insertando el plan generado:', errorInsert)
+        alert('No se pudo guardar el plan generado. Detalle: ' + errorInsert.message)
+        setGenerando(false)
+        return
+      }
+
+      setPlanGenerado(true)
+      await fetchData()
     } catch (err: any) {
       if (String(err?.message || err).includes('SALDO_INSUFICIENTE')) setSinSaldo(true)
       console.error('Error generando plan:', err)
@@ -137,20 +168,54 @@ export default function CalendarioPage() {
         instruccionesLibres
       )
 
-      if (resultado?.sesiones) {
-        await supabase.from('sessions').delete()
-          .eq('user_id', userId).gte('date', hoy).neq('day_type', 'competition')
-
-        const fechasConCompeticion = new Set((competiciones || []).map((c: any) => c.date))
-        const nuevasSesiones = resultado.sesiones
-          .filter((s: any) => !fechasConCompeticion.has(s.date))
-          .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
-        await supabase.from('sessions').insert(nuevasSesiones)
-        await fetchData()
+      // 1. Si la IA no devolvió sesiones válidas, NO tocamos nada.
+      if (!resultado?.sesiones || resultado.sesiones.length === 0) {
+        console.error('Recálculo abortado: la IA no devolvió sesiones. Plan anterior intacto.')
+        alert('No se pudo recalcular el plan (la IA no devolvió sesiones). Tu plan actual se ha conservado. Inténtalo de nuevo.')
+        setGenerando(false)
+        return
       }
+
+      const fechasConCompeticion = new Set((competiciones || []).map((c: any) => c.date))
+      const nuevasSesiones = resultado.sesiones
+        .filter((s: any) => !fechasConCompeticion.has(s.date))
+        .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
+
+      if (nuevasSesiones.length === 0) {
+        console.error('Recálculo abortado: 0 sesiones tras filtrar competiciones. Plan anterior intacto.')
+        alert('No se pudo recalcular el plan. Tu plan actual se ha conservado. Inténtalo de nuevo.')
+        setGenerando(false)
+        return
+      }
+
+      // 2. PRIMERO insertamos las nuevas. Si falla, NO borramos nada.
+      const { error: errorInsert } = await supabase.from('sessions').insert(nuevasSesiones)
+      if (errorInsert) {
+        console.error('Error insertando sesiones nuevas. Plan anterior intacto:', errorInsert)
+        alert('No se pudo guardar el plan recalculado. Tu plan actual se ha conservado. Detalle: ' + errorInsert.message)
+        setGenerando(false)
+        return
+      }
+
+      // 3. Solo si la inserción fue bien, borramos las viejas (por su id, sin tocar las recién creadas ni las competiciones).
+      const idsAntiguos = (todasSesiones || [])
+        .filter((s: any) => s.day_type !== 'competition')
+        .map((s: any) => s.id)
+
+      if (idsAntiguos.length > 0) {
+        const { error: errorDelete } = await supabase.from('sessions')
+          .delete().in('id', idsAntiguos)
+        if (errorDelete) {
+          console.error('Aviso: plan nuevo insertado pero quedaron sesiones antiguas sin borrar:', errorDelete)
+          alert('El plan nuevo se ha generado, pero quedaron sesiones antiguas duplicadas. Revisa el calendario.')
+        }
+      }
+
+      await fetchData()
     } catch (err: any) {
       if (String(err?.message || err).includes('SALDO_INSUFICIENTE')) setSinSaldo(true)
       console.error('Error recalculando plan:', err)
+      alert('Hubo un error al recalcular. Tu plan actual se ha conservado.')
     }
     setGenerando(false)
   }
@@ -201,40 +266,65 @@ export default function CalendarioPage() {
         perfil, comp, sesionesVentana, sesionesContexto, competiciones || []
       )
 
-      if (resultado?.sesiones) {
-        // Red de seguridad: rellenar días de la ventana sin sesión como Descanso (excepto el día de competición)
-        const fechasGeneradas = new Set(resultado.sesiones.map((s: any) => s.date))
-        const sesionesFinales = [...resultado.sesiones]
-        const cur = new Date(ventanaInicio + 'T12:00:00')
-        const finV = new Date(ventanaFin + 'T12:00:00')
-        while (cur <= finV) {
-          const ds = toStr(cur)
-          if (ds !== comp.date && !fechasGeneradas.has(ds)) {
-            sesionesFinales.push({
-              date: ds, discipline: 'Descanso', day_type: 'rest',
-              planned_zone: null, planned_duration: null, planned_load: null,
-              title: 'Descanso', description: null, type: 'rest',
-            })
-          }
-          cur.setDate(cur.getDate() + 1)
-        }
-
-        // Borrar entrenamientos/descansos de la ventana (sin tocar competiciones)
-        await supabase.from('sessions').delete()
-          .eq('user_id', userId)
-          .gte('date', ventanaInicio).lte('date', ventanaFin)
-          .neq('day_type', 'competition')
-
-        // Insertar las nuevas, evitando fechas que ya tengan competición
-        const fechasConCompeticion = new Set((competiciones || []).map((c: any) => c.date))
-        const nuevasSesiones = sesionesFinales
-          .filter((s: any) => !fechasConCompeticion.has(s.date))
-          .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
-        await supabase.from('sessions').insert(nuevasSesiones)
-        await fetchData()
+      // Si la IA no devolvió sesiones, NO tocamos la ventana.
+      if (!resultado?.sesiones || resultado.sesiones.length === 0) {
+        console.error('Ajuste de ventana abortado: la IA no devolvió sesiones. Ventana intacta.')
+        alert('No se pudo ajustar la ventana de la competición. Tus entrenamientos actuales se han conservado.')
+        setCompPendiente(null)
+        setGenerando(false)
+        return
       }
+
+      // Red de seguridad: rellenar días de la ventana sin sesión como Descanso (excepto el día de competición)
+      const fechasGeneradas = new Set(resultado.sesiones.map((s: any) => s.date))
+      const sesionesFinales = [...resultado.sesiones]
+      const cur = new Date(ventanaInicio + 'T12:00:00')
+      const finV = new Date(ventanaFin + 'T12:00:00')
+      while (cur <= finV) {
+        const ds = toStr(cur)
+        if (ds !== comp.date && !fechasGeneradas.has(ds)) {
+          sesionesFinales.push({
+            date: ds, discipline: 'Descanso', day_type: 'rest',
+            planned_zone: null, planned_duration: null, planned_load: null,
+            title: 'Descanso', description: null, type: 'rest',
+          })
+        }
+        cur.setDate(cur.getDate() + 1)
+      }
+
+      // Insertar las nuevas (evitando fechas con competición). Si falla, NO borramos nada.
+      const fechasConCompeticion = new Set((competiciones || []).map((c: any) => c.date))
+      const nuevasSesiones = sesionesFinales
+        .filter((s: any) => !fechasConCompeticion.has(s.date))
+        .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
+
+      const { error: errorInsert } = await supabase.from('sessions').insert(nuevasSesiones)
+      if (errorInsert) {
+        console.error('Error insertando ajuste de ventana. Ventana intacta:', errorInsert)
+        alert('No se pudo guardar el ajuste de la competición. Tus entrenamientos actuales se han conservado. Detalle: ' + errorInsert.message)
+        setCompPendiente(null)
+        setGenerando(false)
+        return
+      }
+
+      // Solo si insertó bien, borramos los entrenamientos/descansos antiguos de la ventana (por id, sin tocar competiciones ni los recién creados)
+      const idsAntiguosVentana = sesionesVentana
+        .filter((s: any) => s.day_type !== 'competition')
+        .map((s: any) => s.id)
+
+      if (idsAntiguosVentana.length > 0) {
+        const { error: errorDelete } = await supabase.from('sessions')
+          .delete().in('id', idsAntiguosVentana)
+        if (errorDelete) {
+          console.error('Aviso: ajuste insertado pero quedaron sesiones antiguas de la ventana sin borrar:', errorDelete)
+          alert('El ajuste se ha aplicado, pero quedaron sesiones antiguas duplicadas en la ventana. Revisa el calendario.')
+        }
+      }
+
+      await fetchData()
     } catch (err) {
       console.error('Error ajustando ventana de competición:', err)
+      alert('Hubo un error al ajustar la ventana. Tus entrenamientos actuales se han conservado.')
     }
     setCompPendiente(null)
     setGenerando(false)
@@ -264,9 +354,24 @@ export default function CalendarioPage() {
     setCargandoChat(false)
   }
 
-  const prevMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1))
-  const nextMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1))
+  const prev = () => {
+    if (view === 'week') setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate() - 7))
+    else setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1))
+  }
+  const next = () => {
+    if (view === 'week') setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate() + 7))
+    else setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1))
+  }
   const monthName = currentDate.toLocaleString('es-ES', { month: 'long', year: 'numeric' })
+  const rangoSemana = (() => {
+    const d = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate())
+    const dow = d.getDay(); const diff = dow === 0 ? 6 : dow - 1
+    const lunes = new Date(d); lunes.setDate(d.getDate() - diff)
+    const domingo = new Date(lunes); domingo.setDate(lunes.getDate() + 6)
+    const f = (x: Date) => x.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })
+    return `${f(lunes)} - ${f(domingo)}`
+  })()
+  const tituloCabecera = view === 'week' ? rangoSemana : monthName
 
   const durezaColor = (n: number) =>
     n >= 8 ? 'text-red-400' : n >= 6 ? 'text-orange-400' : n >= 4 ? 'text-yellow-400' : 'text-green-400'
@@ -357,9 +462,9 @@ export default function CalendarioPage() {
         )}
 
         <div className="flex items-center justify-between mb-4">
-          <button onClick={prevMonth} className="text-gray-400 hover:text-white px-3 py-2 rounded-lg hover:bg-gray-800 transition">←</button>
-          <h2 className="text-lg font-medium capitalize">{monthName}</h2>
-          <button onClick={nextMonth} className="text-gray-400 hover:text-white px-3 py-2 rounded-lg hover:bg-gray-800 transition">→</button>
+          <button onClick={prev} className="text-gray-400 hover:text-white px-3 py-2 rounded-lg hover:bg-gray-800 transition">←</button>
+          <h2 className="text-lg font-medium capitalize">{tituloCabecera}</h2>
+          <button onClick={next} className="text-gray-400 hover:text-white px-3 py-2 rounded-lg hover:bg-gray-800 transition">→</button>
         </div>
 
         {loading ? (
@@ -371,6 +476,7 @@ export default function CalendarioPage() {
             onRefresh={fetchData}
             schedulePattern={perfil?.schedule_pattern}
             onCompetitionAdded={handleCompeticionAnadida}
+            view={view}
           />
         )}
       </div>

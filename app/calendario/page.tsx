@@ -157,12 +157,26 @@ export default function CalendarioPage() {
         .from('sessions').select('*')
         .eq('user_id', userId).gte('date', hoy)
 
+      // Historial de las últimas 4 semanas (sesiones pasadas completadas con RPE):
+      // se usa para comparar RPE percibida vs carga planificada en el recálculo.
+      const hace28 = new Date()
+      hace28.setDate(hace28.getDate() - 28)
+      const hace28Str = hace28.toISOString().split('T')[0]
+
+      const { data: historial } = await supabase
+        .from('sessions').select('*')
+        .eq('user_id', userId)
+        .eq('day_type', 'training')
+        .eq('completed', true)
+        .gte('date', hace28Str)
+        .lt('date', hoy)
+
       const { data: competiciones } = await supabase
         .from('sessions').select('*')
         .eq('user_id', userId).eq('day_type', 'competition')
 
       const resultado = await recalcularPlanAction(
-        perfil, todasSesiones || [], competiciones || [],
+        perfil, historial || [], competiciones || [],
         ca || { ca: 3, estado: 'Moderado', recomendacion: 'Según plan', acr: 1, componentes: {} },
         'Recálculo manual solicitado por el usuario',
         instruccionesLibres
@@ -397,6 +411,10 @@ export default function CalendarioPage() {
               className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
               👤 Perfil
             </a>
+            <a href="/suplementacion"
+              className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
+              💊 Suplementación
+            </a>
           </div>
           <div className="flex items-center gap-3">
             {ca && (
@@ -515,6 +533,7 @@ export default function CalendarioPage() {
             <h3 className="font-semibold text-lg mb-2">⟳ Recalcular plan</h3>
             <p className="text-gray-400 text-sm mb-4">
               Se reemplazarán todas las sesiones futuras. Las pasadas y competiciones no se tocarán.
+              El recálculo tendrá en cuenta la RPE que has registrado en tus últimas sesiones.
             </p>
             <textarea
               className="w-full bg-gray-800 text-white rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 resize-none mb-4"

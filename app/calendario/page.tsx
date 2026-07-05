@@ -24,6 +24,11 @@ export default function CalendarioPage() {
   const [compPendiente, setCompPendiente] = useState<any>(null)
   const [showAjusteVentana, setShowAjusteVentana] = useState(false)
 
+  const [showExtenderPlan, setShowExtenderPlan] = useState(false)
+  const [ultimaFechaPlan, setUltimaFechaPlan] = useState<string>('')
+  const [diasRestantesPlan, setDiasRestantesPlan] = useState<number>(0)
+  const extenderDescartadoRef = useRef(false)
+
   const [chatAbierto, setChatAbierto] = useState(false)
   const [mensajesChat, setMensajesChat] = useState<{ role: string; content: string }[]>([
     { role: 'assistant', content: '¡Hola! Soy tu asistente de entrenamiento. Puedo ayudarte a ajustar tu plan, responder dudas o hacer cambios. ¿En qué te ayudo?' }
@@ -52,7 +57,8 @@ export default function CalendarioPage() {
       .eq('user_id', session.user.id)
       .neq('day_type', 'competition')
       .limit(1)
-    setPlanGenerado(!!(haySesiones && haySesiones.length > 0))
+    const hayPlan = !!(haySesiones && haySesiones.length > 0)
+    setPlanGenerado(hayPlan)
 
     // Rango según la vista (mes completo o semana lunes-domingo). Sin toISOString (zona horaria).
     const toS = (x: Date) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
@@ -78,6 +84,29 @@ export default function CalendarioPage() {
       .gte('date', startStr)
       .lte('date', endStr)
     setSessions(s || [])
+
+    // Detección de fin de plan: si quedan 30 días o menos, ofrecer generar el siguiente trimestre
+    if (hayPlan) {
+      const { data: ultima } = await supabase
+        .from('sessions')
+        .select('date')
+        .eq('user_id', session.user.id)
+        .neq('day_type', 'competition')
+        .order('date', { ascending: false })
+        .limit(1)
+      if (ultima && ultima.length > 0) {
+        const ultimaFecha = ultima[0].date
+        setUltimaFechaPlan(ultimaFecha)
+        const hoyStr = toS(new Date())
+        const dRestantes = Math.floor(
+          (new Date(ultimaFecha + 'T12:00:00').getTime() - new Date(hoyStr + 'T12:00:00').getTime()) / 86400000
+        )
+        setDiasRestantesPlan(dRestantes)
+        if (dRestantes <= 30 && !extenderDescartadoRef.current) {
+          setShowExtenderPlan(true)
+        }
+      }
+    }
 
     const caHoy = await calcularCargaAlostatica(session.user.id, null)
     setCa(caHoy)
@@ -143,6 +172,72 @@ export default function CalendarioPage() {
     } catch (err: any) {
       if (String(err?.message || err).includes('SALDO_INSUFICIENTE')) setSinSaldo(true)
       console.error('Error generando plan:', err)
+    }
+    setGenerando(false)
+  }
+
+  const handleExtenderPlan = async () => {
+    if (!perfil || !ultimaFechaPlan) return
+    setShowExtenderPlan(false)
+    setGenerando(true)
+    try {
+      const toStr = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+      // El nuevo trimestre empieza el día después de la última sesión planificada
+      // (o mañana, si el plan ya terminó en el pasado)
+      const dSiguiente = new Date(ultimaFechaPlan + 'T12:00:00')
+      dSiguiente.setDate(dSiguiente.getDate() + 1)
+      const dManana = new Date()
+      dManana.setDate(dManana.getDate() + 1)
+      dManana.setHours(12, 0, 0, 0)
+      const dInicio = dSiguiente.getTime() >= dManana.getTime() ? dSiguiente : dManana
+      const inicioStr = toStr(dInicio)
+
+      const dFin = new Date(dInicio)
+      dFin.setMonth(dFin.getMonth() + 3)
+      const finStr = toStr(dFin)
+
+      const { data: competiciones } = await supabase
+        .from('sessions').select('*')
+        .eq('user_id', userId).eq('day_type', 'competition')
+
+      const resultado = await generarPlanAction(perfil, competiciones || [], inicioStr, finStr, '')
+
+      if (!resultado?.sesiones || resultado.sesiones.length === 0) {
+        console.error('Extensión abortada: la IA no devolvió sesiones. Plan actual intacto.')
+        alert('No se pudo generar el siguiente trimestre. Tu plan actual se ha conservado. Inténtalo de nuevo.')
+        setGenerando(false)
+        return
+      }
+
+      // Solo insertamos sesiones desde el inicio del nuevo trimestre, sin pisar plan existente ni competiciones
+      const fechasConCompeticion = new Set((competiciones || []).map((c: any) => c.date))
+      const nuevasSesiones = resultado.sesiones
+        .filter((s: any) => !fechasConCompeticion.has(s.date) && s.date >= inicioStr)
+        .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
+
+      if (nuevasSesiones.length === 0) {
+        console.error('Extensión abortada: 0 sesiones válidas tras filtrar. Plan actual intacto.')
+        alert('No se pudo generar el siguiente trimestre. Tu plan actual se ha conservado. Inténtalo de nuevo.')
+        setGenerando(false)
+        return
+      }
+
+      const { error: errorInsert } = await supabase.from('sessions').insert(nuevasSesiones)
+      if (errorInsert) {
+        console.error('Error insertando el siguiente trimestre:', errorInsert)
+        alert('No se pudo guardar el siguiente trimestre. Tu plan actual se ha conservado. Detalle: ' + errorInsert.message)
+        setGenerando(false)
+        return
+      }
+
+      extenderDescartadoRef.current = true
+      await fetchData()
+    } catch (err: any) {
+      if (String(err?.message || err).includes('SALDO_INSUFICIENTE')) setSinSaldo(true)
+      console.error('Error extendiendo plan:', err)
+      alert('Hubo un error al generar el siguiente trimestre. Tu plan actual se ha conservado.')
     }
     setGenerando(false)
   }
@@ -498,6 +593,30 @@ export default function CalendarioPage() {
           />
         )}
       </div>
+
+      {showExtenderPlan && !generando && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 rounded-2xl w-full max-w-md border border-gray-800 p-6">
+            <h3 className="font-semibold text-lg mb-2">📅 Tu plan está acabando</h3>
+            <p className="text-gray-400 text-sm mb-4">
+              {diasRestantesPlan >= 0
+                ? `Quedan ${diasRestantesPlan} días de plan (última sesión: ${new Date(ultimaFechaPlan + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'long' })}).`
+                : 'Tu plan ya ha terminado.'}
+              {' '}¿Quieres generar ahora el siguiente trimestre? Se añadirá a continuación del plan actual, sin modificar lo que ya tienes.
+            </p>
+            <div className="flex gap-3">
+              <button onClick={() => { setShowExtenderPlan(false); extenderDescartadoRef.current = true }}
+                className="flex-1 bg-gray-800 hover:bg-gray-700 py-3 rounded-xl text-sm transition">
+                Ahora no
+              </button>
+              <button onClick={handleExtenderPlan}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 py-3 rounded-xl text-sm font-medium transition">
+                Generar siguiente trimestre
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showModalPlan && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">

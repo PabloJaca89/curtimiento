@@ -510,6 +510,10 @@ export default function CalendarioPage() {
               className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
               💊 Suplementación
             </a>
+            <a href="/estadisticas"
+              className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
+              📊 Estadísticas
+            </a>
           </div>
           <div className="flex items-center gap-3">
             {ca && (

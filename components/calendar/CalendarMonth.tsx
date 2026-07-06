@@ -88,7 +88,7 @@ interface Session {
   id: string; date: string; type: string; discipline?: string; title?: string
   description?: string; energy_level?: number; rpe?: number; perceived_rpe?: number
   planned_zone?: number; planned_duration?: number; actual_duration?: number
-  completed?: boolean; competition_importance?: string; day_type?: string
+  completed?: boolean | null; competition_importance?: string; day_type?: string
   planned_load?: number; modalidad?: string; distancia?: string
 }
 
@@ -230,8 +230,11 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh, schedu
                   <div className={`text-xs font-medium ${isToday ? 'text-blue-400' : 'text-gray-500'}`}>
                     {day.getDate()}
                   </div>
-                  {daySessions.filter(s => s.completed).map((s, i) => (
-                    <span key={`tick-${s.id}-${i}`} className="text-green-400 text-xs leading-none" title="Sesión completada">✓</span>
+                  {daySessions.filter(s => s.completed === true).map((s, i) => (
+                    <span key={`tick-${s.id}-${i}`} className="text-green-400 text-xs leading-none" title="Sesión realizada">✓</span>
+                  ))}
+                  {daySessions.filter(s => s.completed === false).map((s, i) => (
+                    <span key={`cross-${s.id}-${i}`} className="text-red-400 text-xs leading-none" title="Sesión no realizada">✗</span>
                   ))}
                 </div>
                 {turnoStyle && (
@@ -253,7 +256,8 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh, schedu
                       className={`text-xs px-1.5 py-1 rounded-md ${colors.bg} ${colors.text} ${detailed ? '' : 'truncate'}
                         transition hover:ring-2 hover:ring-white/40
                         ${isComp ? 'border border-red-500' : 'cursor-grab active:cursor-grabbing'}
-                        ${s.completed ? 'opacity-60' : ''}
+                        ${s.completed === true ? 'opacity-60' : ''}
+                        ${s.completed === false ? 'opacity-40 line-through' : ''}
                         ${dragSession?.id === s.id ? 'opacity-40' : ''}`}>
                       <div className="flex items-center gap-1">
                         <span className="text-xs">{DISCIPLINE_ICONS[disc] || '📋'}</span>
@@ -269,7 +273,7 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh, schedu
                               {s.competition_importance === 'A' ? '★' : s.competition_importance === 'B' ? '◆' : '●'}
                             </span>
                           )}
-                          {s.completed ? '✓ ' : ''}{s.title || disc}
+                          {s.completed === true ? '✓ ' : s.completed === false ? '✗ ' : ''}{s.title || disc}
                         </span>
                       </div>
                       {detailed && (s.planned_zone || s.planned_duration) && (
@@ -365,7 +369,9 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
   const [importance, setImportance] = useState(editSession?.competition_importance || 'B')
   const [modalidad, setModalidad] = useState(editSession?.modalidad || '')
   const [distancia, setDistancia] = useState(editSession?.distancia || '')
-  const [completed, setCompleted] = useState(editSession?.completed || false)
+  const [completed, setCompleted] = useState<boolean | null>(
+    editSession?.completed === true ? true : editSession?.completed === false ? false : null
+  )
   const [loading, setLoading] = useState(false)
   const [correctorCalorAmarillo, setCorrectorCalorAmarillo] = useState(false)
   const [correctorCalorRojo, setCorrectorCalorRojo] = useState(false)
@@ -403,6 +409,7 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
         competition_importance: type === 'competition' ? importance : null,
         modalidad: type === 'competition' ? modalidad : null,
         distancia: type === 'competition' ? distancia : null,
+        completed: completed,
       })
     }
     setLoading(false)
@@ -615,12 +622,25 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
           </div>
 
           {(isPast || isEdit) && (
-            <div className="flex items-center justify-between bg-gray-800 rounded-xl px-4 py-3">
-              <span className="text-sm text-gray-300">Sesión completada</span>
-              <button onClick={() => setCompleted(!completed)}
-                className={`w-12 h-6 rounded-full transition ${completed ? 'bg-blue-600' : 'bg-gray-700'}`}>
-                <div className={`w-5 h-5 bg-white rounded-full mx-0.5 transition-transform ${completed ? 'translate-x-6' : ''}`} />
-              </button>
+            <div>
+              <label className="text-xs text-gray-400 mb-2 block">Estado de la sesión</label>
+              <div className="grid grid-cols-3 gap-2">
+                <button onClick={() => setCompleted(null)}
+                  className={`py-2.5 rounded-xl text-xs font-medium border transition ${
+                    completed === null ? 'bg-gray-600 border-gray-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500'
+                  }`}>⏳ Pendiente</button>
+                <button onClick={() => setCompleted(true)}
+                  className={`py-2.5 rounded-xl text-xs font-medium border transition ${
+                    completed === true ? 'bg-green-600 border-green-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-green-500'
+                  }`}>✓ Realizada</button>
+                <button onClick={() => setCompleted(false)}
+                  className={`py-2.5 rounded-xl text-xs font-medium border transition ${
+                    completed === false ? 'bg-red-600 border-red-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-red-500'
+                  }`}>✗ No realizada</button>
+              </div>
+              {completed === false && (
+                <p className="text-xs text-gray-500 mt-2">Esta sesión no computará carga: el día contará como descanso a efectos de fatiga.</p>
+              )}
             </div>
           )}
 

@@ -1,23 +1,113 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
+import { calcularCargaAlostatica } from '@/lib/fatigaService'
+
+const DISCIPLINE_ICONS: Record<string, string> = {
+  'Running': '🏃', 'Bici carretera': '🚴', 'BTT': '🚵', 'Spinning': '⚡',
+  'Natación': '🏊', 'Paddle surf': '🏄', 'Fuerza tren superior A': '💪',
+  'Fuerza tren superior B': '💪', 'Fuerza tren inferior': '🦵',
+  'Descanso': '😴', 'Compromiso': '📅', 'Competición': '🏁',
+}
+
+const toStr = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+function iconoDe(s: any): string {
+  if (s.day_type === 'competition') return '🏁'
+  if (s.day_type === 'rest') return '😴'
+  if (s.day_type === 'compromise') return '📅'
+  return DISCIPLINE_ICONS[s.discipline] || '📋'
+}
+
+function TarjetaSesion({ titulo, sesiones }: { titulo: string; sesiones: any[] }) {
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+      <div className="text-xs text-gray-500 mb-3 uppercase tracking-wider">{titulo}</div>
+      {sesiones.length === 0 ? (
+        <div className="text-gray-600 text-sm">Sin sesión planificada.</div>
+      ) : (
+        <div className="space-y-3">
+          {sesiones.map((s: any) => (
+            <div key={s.id}>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xl">{iconoDe(s)}</span>
+                <span className="font-medium text-white">
+                  {s.title || s.discipline || (s.day_type === 'rest' ? 'Descanso' : 'Sesión')}
+                </span>
+                {s.completed === true && <span className="text-green-400 text-sm">✓</span>}
+                {s.completed === false && <span className="text-red-400 text-sm">✗</span>}
+              </div>
+              {(s.planned_zone || s.planned_duration || s.planned_load) && (
+                <div className="text-xs text-gray-400 flex gap-3 ml-8">
+                  {s.planned_zone && <span>Zona Z{s.planned_zone}</span>}
+                  {s.planned_duration && <span>{s.planned_duration} min</span>}
+                  {s.planned_load && <span>Carga {s.planned_load}/10</span>}
+                </div>
+              )}
+              {s.description && (
+                <div className="text-xs text-gray-500 mt-1 ml-8 leading-snug">{s.description}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function Dashboard() {
   const router = useRouter()
   const [user, setUser] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  const [sesionesHoy, setSesionesHoy] = useState<any[]>([])
+  const [sesionesManana, setSesionesManana] = useState<any[]>([])
+  const [ca, setCa] = useState<any>(null)
+  const [proximaComp, setProximaComp] = useState<any>(null)
 
-  useEffect(() => {
-    const checkUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) {
-        router.push('/login')
-      } else {
-        setUser(session.user)
-      }
+  const fetchData = useCallback(async () => {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) {
+      router.push('/login')
+      return
     }
-    checkUser()
-  }, [])
+    setUser(session.user)
+
+    const hoy = new Date()
+    const manana = new Date()
+    manana.setDate(manana.getDate() + 1)
+    const hoyStr = toStr(hoy)
+    const mananaStr = toStr(manana)
+
+    const { data: s } = await supabase
+      .from('sessions')
+      .select('*')
+      .eq('user_id', session.user.id)
+      .gte('date', hoyStr)
+      .lte('date', mananaStr)
+    const todas = s || []
+    setSesionesHoy(todas.filter((x: any) => x.date === hoyStr))
+    setSesionesManana(todas.filter((x: any) => x.date === mananaStr))
+
+    const { data: comps } = await supabase
+      .from('sessions')
+      .select('*')
+      .eq('user_id', session.user.id)
+      .eq('day_type', 'competition')
+      .gte('date', hoyStr)
+      .order('date', { ascending: true })
+      .limit(1)
+    setProximaComp(comps && comps.length > 0 ? comps[0] : null)
+
+    const caHoy = await calcularCargaAlostatica(session.user.id, null)
+    setCa(caHoy)
+
+    setLoading(false)
+  }, [router])
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { fetchData() }, [fetchData])
 
   const handleLogout = async () => {
     await supabase.auth.signOut()
@@ -26,10 +116,26 @@ export default function Dashboard() {
 
   if (!user) return null
 
+  const diasParaComp = proximaComp
+    ? Math.floor(
+        (new Date(proximaComp.date + 'T12:00:00').getTime() - new Date(toStr(new Date()) + 'T12:00:00').getTime()) / 86400000
+      )
+    : null
+
+  const caColor = ca
+    ? ca.ca <= 2.0 ? 'text-green-400'
+    : ca.ca <= 3.0 ? 'text-blue-400'
+    : ca.ca <= 3.9 ? 'text-yellow-400'
+    : 'text-red-400'
+    : 'text-gray-400'
+
+  const fechaHoy = new Date().toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' })
+
   return (
     <div className="min-h-screen bg-gray-950 text-white p-6">
       <div className="max-w-4xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
+
+        <div className="flex justify-between items-center mb-2">
           <h1 className="text-2xl font-bold tracking-widest">CURTIMIENTO</h1>
           <button
             onClick={handleLogout}
@@ -38,11 +144,87 @@ export default function Dashboard() {
             Cerrar sesión
           </button>
         </div>
-        <div className="bg-gray-900 rounded-2xl p-8 text-center">
-          <p className="text-gray-400 text-lg">¡Bienvenido! 👋</p>
-          <p className="text-gray-500 text-sm mt-2">{user.email}</p>
-          <p className="text-gray-600 text-sm mt-4">Etapa 1 completada ✅ — Aquí irá tu plan de entrenamiento</p>
-        </div>
+        <div className="text-sm text-gray-500 capitalize mb-6">{fechaHoy}</div>
+
+        {loading ? (
+          <div className="text-center text-gray-500 py-20">Cargando...</div>
+        ) : (
+          <>
+            {/* Estado de fatiga + próxima competición */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+                <div className="text-xs text-gray-500 mb-3 uppercase tracking-wider">Estado de fatiga</div>
+                {ca ? (
+                  <>
+                    <div className="flex items-baseline gap-2 mb-1">
+                      <span className={`text-4xl font-bold ${caColor}`}>{ca.ca}</span>
+                      <span className="text-gray-400">— {ca.estado}</span>
+                    </div>
+                    {ca.recomendacion && (
+                      <div className="text-sm text-gray-400 mt-2">{ca.recomendacion}</div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-gray-600 text-sm">Sin datos de fatiga todavía.</div>
+                )}
+              </div>
+
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+                <div className="text-xs text-gray-500 mb-3 uppercase tracking-wider">Próxima competición</div>
+                {proximaComp ? (
+                  <>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-xl">🏁</span>
+                      <span className="font-medium text-white">
+                        {proximaComp.modalidad || proximaComp.title || 'Competición'}
+                      </span>
+                      {proximaComp.competition_importance && (
+                        <span className="text-xs bg-red-900 text-red-300 px-2 py-0.5 rounded-full font-bold">
+                          {proximaComp.competition_importance}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-sm text-gray-400 ml-8">
+                      {new Date(proximaComp.date + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' })}
+                      {proximaComp.distancia && ` · ${proximaComp.distancia}`}
+                    </div>
+                    <div className="mt-2 ml-8">
+                      <span className="text-2xl font-bold text-blue-400">{diasParaComp}</span>
+                      <span className="text-sm text-gray-500 ml-1">{diasParaComp === 1 ? 'día' : 'días'}</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-gray-600 text-sm">No hay competiciones programadas.</div>
+                )}
+              </div>
+            </div>
+
+            {/* Hoy y mañana */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <TarjetaSesion titulo="Hoy" sesiones={sesionesHoy} />
+              <TarjetaSesion titulo="Mañana" sesiones={sesionesManana} />
+            </div>
+
+            {/* Accesos directos */}
+            <div className="grid grid-cols-3 gap-4">
+              <a href="/calendario"
+                className="bg-gray-900 border border-gray-800 hover:border-blue-500 rounded-2xl p-5 text-center transition group">
+                <div className="text-3xl mb-2">🗓️</div>
+                <div className="text-sm text-gray-400 group-hover:text-white transition">Calendario</div>
+              </a>
+              <a href="/estadisticas"
+                className="bg-gray-900 border border-gray-800 hover:border-blue-500 rounded-2xl p-5 text-center transition group">
+                <div className="text-3xl mb-2">📊</div>
+                <div className="text-sm text-gray-400 group-hover:text-white transition">Estadísticas</div>
+              </a>
+              <a href="/suplementacion"
+                className="bg-gray-900 border border-gray-800 hover:border-blue-500 rounded-2xl p-5 text-center transition group">
+                <div className="text-3xl mb-2">💊</div>
+                <div className="text-sm text-gray-400 group-hover:text-white transition">Suplementación</div>
+              </a>
+            </div>
+          </>
+        )}
       </div>
     </div>
   )

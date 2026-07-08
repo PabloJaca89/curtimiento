@@ -4,8 +4,11 @@ import { supabase } from '@/lib/supabase'
 import { generarPlanAction, recalcularPlanAction, chatAsistenteAction, ajustarVentanaCompeticionAction } from './actions'
 import { calcularCargaAlostatica, actualizarDurezaSemanal, obtenerDurezaSemanal } from '@/lib/fatigaService'
 import CalendarMonth from '@/components/calendar/CalendarMonth'
+import { useToast } from '@/components/ui/Toast'
+import { generarICS, descargarICS } from '@/lib/icsExport'
 
 export default function CalendarioPage() {
+  const { notificar } = useToast()
   const [view, setView] = useState<'month' | 'week'>('month')
   const [currentDate, setCurrentDate] = useState(new Date())
   const [sessions, setSessions] = useState<any[]>([])
@@ -18,6 +21,7 @@ export default function CalendarioPage() {
   const [sinSaldo, setSinSaldo] = useState(false)
   const [planGenerado, setPlanGenerado] = useState(false)
   const [generando, setGenerando] = useState(false)
+  const [exportando, setExportando] = useState(false)
   const [showConfirmRecalc, setShowConfirmRecalc] = useState(false)
   const [showModalPlan, setShowModalPlan] = useState(false)
   const [instruccionesLibres, setInstruccionesLibres] = useState('')
@@ -125,6 +129,30 @@ export default function CalendarioPage() {
     if (chatAbierto) chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [mensajesChat, chatAbierto])
 
+  const handleExportarICS = async () => {
+    if (!userId) return
+    setExportando(true)
+    try {
+      const { data: todas } = await supabase
+        .from('sessions').select('*')
+        .eq('user_id', userId)
+        .order('date', { ascending: true })
+
+      if (!todas || todas.length === 0) {
+        notificar('No hay plan que exportar todavía.', 'info')
+        setExportando(false)
+        return
+      }
+
+      const ics = generarICS(todas)
+      descargarICS(ics, 'curtimiento-plan.ics')
+      notificar('Plan exportado. Ábrelo para añadirlo a tu calendario.', 'success')
+    } catch (err) {
+      notificar('No se pudo exportar el plan. Inténtalo de nuevo.', 'error')
+    }
+    setExportando(false)
+  }
+
   const handleGenerarPlan = async () => {
     if (!perfil) return
     setGenerando(true)
@@ -141,8 +169,7 @@ export default function CalendarioPage() {
       const resultado = await generarPlanAction(perfil, competiciones || [], hoy, fechaFin, instruccionesLibres)
 
       if (!resultado?.sesiones || resultado.sesiones.length === 0) {
-        console.error('Generación abortada: la IA no devolvió sesiones.')
-        alert('No se pudo generar el plan (la IA no devolvió sesiones). Inténtalo de nuevo.')
+        notificar('No se pudo generar el plan (la IA no devolvió sesiones). Inténtalo de nuevo.', 'error')
         setGenerando(false)
         return
       }
@@ -153,25 +180,24 @@ export default function CalendarioPage() {
         .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
 
       if (nuevasSesiones.length === 0) {
-        console.error('Generación abortada: 0 sesiones tras filtrar competiciones.')
-        alert('No se pudo generar el plan. Inténtalo de nuevo.')
+        notificar('No se pudo generar el plan. Inténtalo de nuevo.', 'error')
         setGenerando(false)
         return
       }
 
       const { error: errorInsert } = await supabase.from('sessions').insert(nuevasSesiones)
       if (errorInsert) {
-        console.error('Error insertando el plan generado:', errorInsert)
-        alert('No se pudo guardar el plan generado. Detalle: ' + errorInsert.message)
+        notificar('No se pudo guardar el plan generado: ' + errorInsert.message, 'error')
         setGenerando(false)
         return
       }
 
       setPlanGenerado(true)
       await fetchData()
+      notificar('Plan generado correctamente.', 'success')
     } catch (err: any) {
       if (String(err?.message || err).includes('SALDO_INSUFICIENTE')) setSinSaldo(true)
-      console.error('Error generando plan:', err)
+      else notificar('Hubo un error al generar el plan. Inténtalo de nuevo.', 'error')
     }
     setGenerando(false)
   }
@@ -205,8 +231,7 @@ export default function CalendarioPage() {
       const resultado = await generarPlanAction(perfil, competiciones || [], inicioStr, finStr, '')
 
       if (!resultado?.sesiones || resultado.sesiones.length === 0) {
-        console.error('Extensión abortada: la IA no devolvió sesiones. Plan actual intacto.')
-        alert('No se pudo generar el siguiente trimestre. Tu plan actual se ha conservado. Inténtalo de nuevo.')
+        notificar('No se pudo generar el siguiente trimestre. Tu plan actual se ha conservado. Inténtalo de nuevo.', 'error')
         setGenerando(false)
         return
       }
@@ -218,26 +243,24 @@ export default function CalendarioPage() {
         .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
 
       if (nuevasSesiones.length === 0) {
-        console.error('Extensión abortada: 0 sesiones válidas tras filtrar. Plan actual intacto.')
-        alert('No se pudo generar el siguiente trimestre. Tu plan actual se ha conservado. Inténtalo de nuevo.')
+        notificar('No se pudo generar el siguiente trimestre. Tu plan actual se ha conservado. Inténtalo de nuevo.', 'error')
         setGenerando(false)
         return
       }
 
       const { error: errorInsert } = await supabase.from('sessions').insert(nuevasSesiones)
       if (errorInsert) {
-        console.error('Error insertando el siguiente trimestre:', errorInsert)
-        alert('No se pudo guardar el siguiente trimestre. Tu plan actual se ha conservado. Detalle: ' + errorInsert.message)
+        notificar('No se pudo guardar el siguiente trimestre. Tu plan actual se ha conservado: ' + errorInsert.message, 'error')
         setGenerando(false)
         return
       }
 
       extenderDescartadoRef.current = true
       await fetchData()
+      notificar('Siguiente trimestre añadido a continuación del plan.', 'success')
     } catch (err: any) {
       if (String(err?.message || err).includes('SALDO_INSUFICIENTE')) setSinSaldo(true)
-      console.error('Error extendiendo plan:', err)
-      alert('Hubo un error al generar el siguiente trimestre. Tu plan actual se ha conservado.')
+      else notificar('Hubo un error al generar el siguiente trimestre. Tu plan actual se ha conservado.', 'error')
     }
     setGenerando(false)
   }
@@ -279,8 +302,7 @@ export default function CalendarioPage() {
 
       // 1. Si la IA no devolvió sesiones válidas, NO tocamos nada.
       if (!resultado?.sesiones || resultado.sesiones.length === 0) {
-        console.error('Recálculo abortado: la IA no devolvió sesiones. Plan anterior intacto.')
-        alert('No se pudo recalcular el plan (la IA no devolvió sesiones). Tu plan actual se ha conservado. Inténtalo de nuevo.')
+        notificar('No se pudo recalcular el plan (la IA no devolvió sesiones). Tu plan actual se ha conservado. Inténtalo de nuevo.', 'error')
         setGenerando(false)
         return
       }
@@ -291,8 +313,7 @@ export default function CalendarioPage() {
         .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
 
       if (nuevasSesiones.length === 0) {
-        console.error('Recálculo abortado: 0 sesiones tras filtrar competiciones. Plan anterior intacto.')
-        alert('No se pudo recalcular el plan. Tu plan actual se ha conservado. Inténtalo de nuevo.')
+        notificar('No se pudo recalcular el plan. Tu plan actual se ha conservado. Inténtalo de nuevo.', 'error')
         setGenerando(false)
         return
       }
@@ -300,8 +321,7 @@ export default function CalendarioPage() {
       // 2. PRIMERO insertamos las nuevas. Si falla, NO borramos nada.
       const { error: errorInsert } = await supabase.from('sessions').insert(nuevasSesiones)
       if (errorInsert) {
-        console.error('Error insertando sesiones nuevas. Plan anterior intacto:', errorInsert)
-        alert('No se pudo guardar el plan recalculado. Tu plan actual se ha conservado. Detalle: ' + errorInsert.message)
+        notificar('No se pudo guardar el plan recalculado. Tu plan actual se ha conservado: ' + errorInsert.message, 'error')
         setGenerando(false)
         return
       }
@@ -315,16 +335,15 @@ export default function CalendarioPage() {
         const { error: errorDelete } = await supabase.from('sessions')
           .delete().in('id', idsAntiguos)
         if (errorDelete) {
-          console.error('Aviso: plan nuevo insertado pero quedaron sesiones antiguas sin borrar:', errorDelete)
-          alert('El plan nuevo se ha generado, pero quedaron sesiones antiguas duplicadas. Revisa el calendario.')
+          notificar('El plan nuevo se ha generado, pero quedaron sesiones antiguas duplicadas. Revisa el calendario.', 'info')
         }
       }
 
       await fetchData()
+      notificar('Plan recalculado correctamente.', 'success')
     } catch (err: any) {
       if (String(err?.message || err).includes('SALDO_INSUFICIENTE')) setSinSaldo(true)
-      console.error('Error recalculando plan:', err)
-      alert('Hubo un error al recalcular. Tu plan actual se ha conservado.')
+      else notificar('Hubo un error al recalcular. Tu plan actual se ha conservado.', 'error')
     }
     setGenerando(false)
   }
@@ -377,8 +396,7 @@ export default function CalendarioPage() {
 
       // Si la IA no devolvió sesiones, NO tocamos la ventana.
       if (!resultado?.sesiones || resultado.sesiones.length === 0) {
-        console.error('Ajuste de ventana abortado: la IA no devolvió sesiones. Ventana intacta.')
-        alert('No se pudo ajustar la ventana de la competición. Tus entrenamientos actuales se han conservado.')
+        notificar('No se pudo ajustar la ventana de la competición. Tus entrenamientos actuales se han conservado.', 'error')
         setCompPendiente(null)
         setGenerando(false)
         return
@@ -409,8 +427,7 @@ export default function CalendarioPage() {
 
       const { error: errorInsert } = await supabase.from('sessions').insert(nuevasSesiones)
       if (errorInsert) {
-        console.error('Error insertando ajuste de ventana. Ventana intacta:', errorInsert)
-        alert('No se pudo guardar el ajuste de la competición. Tus entrenamientos actuales se han conservado. Detalle: ' + errorInsert.message)
+        notificar('No se pudo guardar el ajuste de la competición. Tus entrenamientos actuales se han conservado: ' + errorInsert.message, 'error')
         setCompPendiente(null)
         setGenerando(false)
         return
@@ -425,15 +442,14 @@ export default function CalendarioPage() {
         const { error: errorDelete } = await supabase.from('sessions')
           .delete().in('id', idsAntiguosVentana)
         if (errorDelete) {
-          console.error('Aviso: ajuste insertado pero quedaron sesiones antiguas de la ventana sin borrar:', errorDelete)
-          alert('El ajuste se ha aplicado, pero quedaron sesiones antiguas duplicadas en la ventana. Revisa el calendario.')
+          notificar('El ajuste se ha aplicado, pero quedaron sesiones antiguas duplicadas en la ventana. Revisa el calendario.', 'info')
         }
       }
 
       await fetchData()
+      notificar('Ventana de competición ajustada.', 'success')
     } catch (err) {
-      console.error('Error ajustando ventana de competición:', err)
-      alert('Hubo un error al ajustar la ventana. Tus entrenamientos actuales se han conservado.')
+      notificar('Hubo un error al ajustar la ventana. Tus entrenamientos actuales se han conservado.', 'error')
     }
     setCompPendiente(null)
     setGenerando(false)
@@ -458,7 +474,7 @@ export default function CalendarioPage() {
       )
       if (respuesta) setMensajesChat([...historial, { role: 'assistant', content: respuesta }])
     } catch (err) {
-      console.error('Error en chat:', err)
+      notificar('El asistente no está disponible ahora mismo. Inténtalo de nuevo.', 'error')
     }
     setCargandoChat(false)
   }
@@ -514,6 +530,12 @@ export default function CalendarioPage() {
               className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
               📊 Estadísticas
             </a>
+            {planGenerado && (
+              <button onClick={handleExportarICS} disabled={exportando}
+                className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 disabled:opacity-50 px-3 py-2 rounded-xl transition">
+                {exportando ? '⏳ Exportando...' : '📆 Exportar .ics'}
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-3">
             {ca && (

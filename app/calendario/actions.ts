@@ -5,43 +5,60 @@ const MODEL = 'claude-sonnet-4-5'
 const MODEL_CHAT = 'claude-haiku-4-5'
 const MAX_TOKENS = 32000
 
+// Máximo de llamadas de continuación si la respuesta se corta por límite de tokens.
+const MAX_CONTINUACIONES = 2
+
 async function llamarClaude(system: string | any[], userPrompt: string): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) throw new Error('API key no configurada')
 
   const systemBlocks = typeof system === 'string' ? [{ type: 'text', text: system }] : system
 
-  const response = await fetch(ANTHROPIC_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      system: systemBlocks,
-      messages: [{ role: 'user', content: userPrompt }],
-    }),
-  })
+  let acumulado = ''
 
-  if (!response.ok) {
-    const err = await response.text()
-    if (err.includes('credit') || err.includes('billing') || err.includes('insufficient')) {
-      throw new Error('SALDO_INSUFICIENTE')
+  for (let intento = 0; intento <= MAX_CONTINUACIONES; intento++) {
+    const messages: any[] = [{ role: 'user', content: userPrompt }]
+    // Si ya tenemos texto parcial, se envía como turno del assistant:
+    // la API continúa exactamente donde se quedó (prefill).
+    if (acumulado) messages.push({ role: 'assistant', content: acumulado })
+
+    const response = await fetch(ANTHROPIC_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: MAX_TOKENS,
+        system: systemBlocks,
+        messages,
+      }),
+    })
+
+    if (!response.ok) {
+      const err = await response.text()
+      if (err.includes('credit') || err.includes('billing') || err.includes('insufficient')) {
+        throw new Error('SALDO_INSUFICIENTE')
+      }
+      throw new Error(err)
     }
-    throw new Error(err)
-  }
-  const data = await response.json()
+    const data = await response.json()
+    const trozo = data.content?.[0]?.text || ''
 
-  // Si la respuesta se cortó por límite de tokens, NO devolvemos un plan a medias.
-  // Lanzamos error para que la capa superior conserve el plan anterior y avise.
-  if (data.stop_reason === 'max_tokens') {
-    throw new Error('RESPUESTA_TRUNCADA')
+    if (data.stop_reason !== 'max_tokens') {
+      return acumulado + trozo
+    }
+
+    // Respuesta cortada por max_tokens: acumulamos y reintentamos con continuación.
+    // trimEnd es obligatorio: la API rechaza un prefill de assistant con espacios finales.
+    acumulado = (acumulado + trozo).trimEnd()
+    if (!acumulado) throw new Error('RESPUESTA_TRUNCADA')
   }
 
-  return data.content?.[0]?.text || ''
+  // Tras agotar las continuaciones sigue cortada: la capa superior conserva el plan anterior.
+  throw new Error('RESPUESTA_TRUNCADA')
 }
 
 function parsearRespuesta(texto: string): any[] {

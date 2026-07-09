@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 import { calcularCargaAlostatica } from '@/lib/fatigaService'
+import { generarAlertasRiesgo, AlertaRiesgo, NivelAlerta } from '@/lib/alertasRiesgo'
 
 const DISCIPLINE_ICONS: Record<string, string> = {
   'Running': '🏃', 'Bici carretera': '🚴', 'BTT': '🚵', 'Spinning': '⚡',
@@ -19,6 +20,45 @@ function iconoDe(s: any): string {
   if (s.day_type === 'rest') return '😴'
   if (s.day_type === 'compromise') return '📅'
   return DISCIPLINE_ICONS[s.discipline] || '📋'
+}
+
+const ALERTA_ESTILOS: Record<NivelAlerta, { border: string; bg: string; icono: string; iconColor: string; etiqueta: string }> = {
+  alto:  { border: 'border-red-800',    bg: 'bg-red-950/40',    icono: '⚠️', iconColor: 'text-red-400',    etiqueta: 'Atención' },
+  medio: { border: 'border-yellow-800', bg: 'bg-yellow-950/30', icono: '⚡', iconColor: 'text-yellow-400', etiqueta: 'Aviso' },
+  info:  { border: 'border-blue-800',   bg: 'bg-blue-950/30',   icono: 'ℹ️', iconColor: 'text-blue-400',   etiqueta: 'Info' },
+}
+
+function PanelAlertas({ alertas }: { alertas: AlertaRiesgo[] }) {
+  if (alertas.length === 0) return null
+  return (
+    <div className="space-y-3 mb-4">
+      {alertas.map(a => {
+        const e = ALERTA_ESTILOS[a.nivel]
+        return (
+          <div key={a.id} className={`border ${e.border} ${e.bg} rounded-2xl p-4`}>
+            <div className="flex items-start gap-3">
+              <span className={`text-lg ${e.iconColor} mt-0.5`}>{e.icono}</span>
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="font-semibold text-white">{a.titulo}</span>
+                  <span className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full ${e.iconColor} border ${e.border}`}>
+                    {e.etiqueta}
+                  </span>
+                </div>
+                <div className="text-sm text-gray-300 leading-snug">{a.mensaje}</div>
+                {a.sugerencia && (
+                  <div className="text-sm text-gray-400 mt-2 flex items-start gap-1.5">
+                    <span className="text-gray-500">→</span>
+                    <span>{a.sugerencia}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 function TarjetaSesion({ titulo, sesiones }: { titulo: string; sesiones: any[] }) {
@@ -65,6 +105,7 @@ export default function Dashboard() {
   const [sesionesManana, setSesionesManana] = useState<any[]>([])
   const [ca, setCa] = useState<any>(null)
   const [proximaComp, setProximaComp] = useState<any>(null)
+  const [alertas, setAlertas] = useState<AlertaRiesgo[]>([])
 
   const fetchData = useCallback(async () => {
     const { data: { session } } = await supabase.auth.getSession()
@@ -102,6 +143,34 @@ export default function Dashboard() {
 
     const caHoy = await calcularCargaAlostatica(session.user.id, null)
     setCa(caHoy)
+
+    // Datos para las alertas de riesgo: historial completado reciente (racha RPE)
+    // y próximas sesiones (para sugerir qué intensa suavizar).
+    const hace14 = new Date()
+    hace14.setDate(hace14.getDate() - 14)
+    const hace14Str = toStr(hace14)
+
+    const { data: historial } = await supabase
+      .from('sessions')
+      .select('date, day_type, discipline, planned_zone, planned_load, perceived_rpe, completed')
+      .eq('user_id', session.user.id)
+      .eq('day_type', 'training')
+      .eq('completed', true)
+      .gte('date', hace14Str)
+      .lt('date', hoyStr)
+
+    const dentro15 = new Date()
+    dentro15.setDate(dentro15.getDate() + 15)
+    const dentro15Str = toStr(dentro15)
+
+    const { data: proximas } = await supabase
+      .from('sessions')
+      .select('date, day_type, discipline, planned_zone, planned_load, perceived_rpe, completed')
+      .eq('user_id', session.user.id)
+      .gte('date', hoyStr)
+      .lte('date', dentro15Str)
+
+    setAlertas(generarAlertasRiesgo(caHoy, historial || [], proximas || []))
 
     setLoading(false)
   }, [router])
@@ -150,6 +219,9 @@ export default function Dashboard() {
           <div className="text-center text-gray-500 py-20">Cargando...</div>
         ) : (
           <>
+            {/* Alertas de riesgo proactivas */}
+            <PanelAlertas alertas={alertas} />
+
             {/* Estado de fatiga + próxima competición */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
               <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">

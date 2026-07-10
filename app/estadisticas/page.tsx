@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect, useCallback } from 'react'
+import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import { obtenerDurezaSemanal } from '@/lib/fatigaService'
 import {
@@ -159,10 +160,10 @@ export default function EstadisticasPage() {
         <div className="flex justify-between items-center mb-6">
           <div className="flex items-center gap-4">
             <h1 className="text-2xl font-bold tracking-widest">📊 ESTADÍSTICAS</h1>
-            <a href="/calendario"
+            <Link href="/calendario"
               className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
               ← Calendario
-            </a>
+            </Link>
           </div>
           <div className="flex bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
             {[4, 8, 12].map(n => (

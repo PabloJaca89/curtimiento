@@ -7,6 +7,7 @@ import CalendarMonth from '@/components/calendar/CalendarMonth'
 import { useToast } from '@/components/ui/Toast'
 import { generarICS, descargarICS } from '@/lib/icsExport'
 import BorrarPlanModal from '@/components/BorrarPlanModal'
+import Link from 'next/link'
 
 export default function CalendarioPage() {
   const { notificar } = useToast()
@@ -520,18 +521,18 @@ export default function CalendarioPage() {
         <div className="flex justify-between items-center mb-4">
           <div className="flex items-center gap-4">
             <h1 className="text-2xl font-bold tracking-widest">CURTIMIENTO</h1>
-            <a href="/perfil"
+            <Link href="/perfil"
               className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
               👤 Perfil
-            </a>
-            <a href="/suplementacion"
+            </Link>
+            <Link href="/suplementacion"
               className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
               💊 Suplementación
-            </a>
-            <a href="/estadisticas"
+            </Link>
+            <Link href="/estadisticas"
               className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
               📊 Estadísticas
-            </a>
+            </Link>
             {planGenerado && (
               <button onClick={handleExportarICS} disabled={exportando}
                 className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 disabled:opacity-50 px-3 py-2 rounded-xl transition">
@@ -602,7 +603,7 @@ export default function CalendarioPage() {
 
         {!perfil && !loading && (
           <div className="bg-yellow-900/30 border border-yellow-700 rounded-xl px-4 py-3 mb-4 text-sm text-yellow-300">
-            ⚠️ Completa tu <a href="/perfil" className="underline">perfil de atleta</a> antes de generar el plan.
+            ⚠️ Completa tu <Link href="/perfil" className="underline">perfil de atleta</Link> antes de generar el plan.
           </div>
         )}
 

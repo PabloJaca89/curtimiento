@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 import { calcularCargaAlostatica } from '@/lib/fatigaService'
 import { generarAlertasRiesgo, AlertaRiesgo, NivelAlerta } from '@/lib/alertasRiesgo'
+import Link from 'next/link'
 
 const DISCIPLINE_ICONS: Record<string, string> = {
   'Running': '🏃', 'Bici carretera': '🚴', 'BTT': '🚵', 'Spinning': '⚡',
@@ -279,21 +280,21 @@ export default function Dashboard() {
 
             {/* Accesos directos */}
             <div className="grid grid-cols-3 gap-4">
-              <a href="/calendario"
+              <Link href="/calendario"
                 className="bg-gray-900 border border-gray-800 hover:border-blue-500 rounded-2xl p-5 text-center transition group">
                 <div className="text-3xl mb-2">🗓️</div>
                 <div className="text-sm text-gray-400 group-hover:text-white transition">Calendario</div>
-              </a>
-              <a href="/estadisticas"
+              </Link>
+              <Link href="/estadisticas"
                 className="bg-gray-900 border border-gray-800 hover:border-blue-500 rounded-2xl p-5 text-center transition group">
                 <div className="text-3xl mb-2">📊</div>
                 <div className="text-sm text-gray-400 group-hover:text-white transition">Estadísticas</div>
-              </a>
-              <a href="/suplementacion"
+              </Link>
+              <Link href="/suplementacion"
                 className="bg-gray-900 border border-gray-800 hover:border-blue-500 rounded-2xl p-5 text-center transition group">
                 <div className="text-3xl mb-2">💊</div>
                 <div className="text-sm text-gray-400 group-hover:text-white transition">Suplementación</div>
-              </a>
+              </Link>
             </div>
           </>
         )}

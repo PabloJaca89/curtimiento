@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
+import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 
@@ -232,9 +233,9 @@ export default function PerfilPage() {
       <div className="max-w-2xl mx-auto">
         <div className="flex items-center gap-4 mb-2">
           <h1 className="text-2xl font-bold tracking-widest">CURTIMIENTO</h1>
-          <a href="/calendario" className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
+          <Link href="/calendario" className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
             ← Calendario
-          </a>
+          </Link>
         </div>
         <p className="text-gray-400 mb-6">Configura tu perfil de atleta</p>
 

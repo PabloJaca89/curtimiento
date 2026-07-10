@@ -6,6 +6,7 @@ import { calcularCargaAlostatica, actualizarDurezaSemanal, obtenerDurezaSemanal 
 import CalendarMonth from '@/components/calendar/CalendarMonth'
 import { useToast } from '@/components/ui/Toast'
 import { generarICS, descargarICS } from '@/lib/icsExport'
+import BorrarPlanModal from '@/components/BorrarPlanModal'
 
 export default function CalendarioPage() {
   const { notificar } = useToast()
@@ -22,6 +23,7 @@ export default function CalendarioPage() {
   const [planGenerado, setPlanGenerado] = useState(false)
   const [generando, setGenerando] = useState(false)
   const [exportando, setExportando] = useState(false)
+  const [showBorrar, setShowBorrar] = useState(false)
   const [showConfirmRecalc, setShowConfirmRecalc] = useState(false)
   const [showModalPlan, setShowModalPlan] = useState(false)
   const [instruccionesLibres, setInstruccionesLibres] = useState('')
@@ -536,6 +538,10 @@ export default function CalendarioPage() {
                 {exportando ? '⏳ Exportando...' : '📆 Exportar .ics'}
               </button>
             )}
+            <button onClick={() => setShowBorrar(true)}
+              className="text-xs text-red-400 hover:text-red-300 bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
+              🗑️ Borrar plan
+            </button>
           </div>
           <div className="flex items-center gap-3">
             {ca && (
@@ -619,6 +625,14 @@ export default function CalendarioPage() {
           />
         )}
       </div>
+
+      {showBorrar && (
+        <BorrarPlanModal
+          userId={userId}
+          onClose={() => setShowBorrar(false)}
+          onDone={fetchData}
+        />
+      )}
 
       {showExtenderPlan && !generando && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">

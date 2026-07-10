@@ -1,5 +1,5 @@
 'use client'
-import { useState, useRef } from 'react'
+import { useState } from 'react'
 import { supabase } from '@/lib/supabase'
 
 const DAY_NAMES = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
@@ -204,9 +204,9 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh, schedu
         ))}
       </div>
 
-      <div className="grid grid-cols-7 gap-1">
+      <div className="grid grid-cols-7 gap-0.5 md:gap-1">
         {days.map((day, idx) => {
-          if (!day) return <div key={idx} className={detailed ? 'min-h-[180px]' : 'min-h-[80px]'} />
+          if (!day) return <div key={idx} className={detailed ? 'min-h-[180px]' : 'min-h-[64px] md:min-h-[80px]'} />
           const dateStr = toDateStr(day)
           const daySessions = getSessionsForDay(day)
           const isToday = dateStr === today
@@ -221,7 +221,7 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh, schedu
               onDragOver={e => handleDragOver(e, dateStr)}
               onDragLeave={handleDragLeave}
               onDrop={e => handleDrop(e, dateStr)}
-              className={`${detailed ? 'min-h-[180px]' : 'min-h-[80px]'} bg-gray-900 rounded-xl p-2 border cursor-pointer transition
+              className={`${detailed ? 'min-h-[180px]' : 'min-h-[64px] md:min-h-[80px]'} bg-gray-900 rounded-lg md:rounded-xl p-1 md:p-2 border cursor-pointer transition
                 ${isToday ? 'border-blue-500' : isDragOver ? 'border-purple-400 bg-purple-900/20' : 'border-gray-800'}
                 ${isPast && !isToday ? 'opacity-70' : ''}
                 hover:border-blue-500`}>
@@ -253,19 +253,19 @@ export default function CalendarMonth({ currentDate, sessions, onRefresh, schedu
                       draggable={!isComp}
                       onDragStart={e => !isComp && handleDragStart(e, s)}
                       onClick={e => handleSessionClick(e, s)}
-                      className={`text-xs px-1.5 py-1 rounded-md ${colors.bg} ${colors.text} ${detailed ? '' : 'truncate'}
+                      className={`text-xs px-1 md:px-1.5 py-0.5 md:py-1 rounded-md ${colors.bg} ${colors.text} ${detailed ? '' : 'truncate'}
                         transition hover:ring-2 hover:ring-white/40
                         ${isComp ? 'border border-red-500' : 'cursor-grab active:cursor-grabbing'}
                         ${s.completed === true ? 'opacity-60' : ''}
                         ${s.completed === false ? 'opacity-40 line-through' : ''}
                         ${dragSession?.id === s.id ? 'opacity-40' : ''}`}>
                       <div className="flex items-center gap-1">
-                        <span className="text-xs">{DISCIPLINE_ICONS[disc] || '📋'}</span>
+                        <span className="text-xs hidden md:inline">{DISCIPLINE_ICONS[disc] || '📋'}</span>
                         {s.planned_zone && ZONE_COLORS[s.planned_zone] && (
                           <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${ZONE_COLORS[s.planned_zone]}`} />
                         )}
                         {s.planned_load && (
-                          <span className="text-xs opacity-60 font-mono">{s.planned_load}</span>
+                          <span className="text-xs opacity-60 font-mono hidden md:inline">{s.planned_load}</span>
                         )}
                         <span className={detailed ? 'font-medium' : 'truncate'}>
                           {isComp && s.competition_importance && (

@@ -515,11 +515,11 @@ export default function CalendarioPage() {
     : 'text-gray-400'
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white p-6">
+    <div className="min-h-screen bg-gray-950 text-white p-4 md:p-6">
       <div className="max-w-6xl mx-auto">
 
-        <div className="flex justify-between items-center mb-4">
-          <div className="flex items-center gap-4">
+        <div className="flex flex-wrap justify-between items-center gap-y-3 mb-4">
+          <div className="flex flex-wrap items-center gap-2 md:gap-4">
             <h1 className="text-2xl font-bold tracking-widest">CURTIMIENTO</h1>
             <Link href="/perfil"
               className="text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition">
@@ -544,7 +544,7 @@ export default function CalendarioPage() {
               🗑️ Borrar plan
             </button>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 md:gap-3">
             {ca && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl px-3 py-2 text-sm">
                 <span className="text-gray-500">CA </span>

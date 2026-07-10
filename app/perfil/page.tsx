@@ -229,7 +229,7 @@ export default function PerfilPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white p-6">
+    <div className="min-h-screen bg-gray-950 text-white p-4 md:p-6">
       <div className="max-w-2xl mx-auto">
         <div className="flex items-center gap-4 mb-2">
           <h1 className="text-2xl font-bold tracking-widest">CURTIMIENTO</h1>
@@ -320,7 +320,7 @@ export default function PerfilPage() {
               <div>
                 <label className={labelClass}>¿En qué día del ciclo estás hoy?</label>
                 <p className="text-xs text-gray-500 mb-3">El patrón es MMTTNNSLLLLL. Selecciona el turno de hoy.</p>
-                <div className="grid grid-cols-12 gap-1">
+                <div className="grid grid-cols-6 md:grid-cols-12 gap-1">
                   {ROTATING_PATTERN.map((shift, idx) => (
                     <button key={idx} onClick={() => setCycleDay(idx)}
                       className={`flex flex-col items-center py-2 px-1 rounded-lg border text-xs transition ${

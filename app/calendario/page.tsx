@@ -179,7 +179,7 @@ export default function CalendarioPage() {
       const fechasConCompeticion = new Set((competiciones || []).map((c: any) => c.date))
       const nuevasSesiones = resultado.sesiones
         .filter((s: any) => !fechasConCompeticion.has(s.date))
-        .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
+        .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training', completed: null }))
 
       if (nuevasSesiones.length === 0) {
         notificar('No se pudo generar el plan. Inténtalo de nuevo.', 'error')
@@ -242,7 +242,7 @@ export default function CalendarioPage() {
       const fechasConCompeticion = new Set((competiciones || []).map((c: any) => c.date))
       const nuevasSesiones = resultado.sesiones
         .filter((s: any) => !fechasConCompeticion.has(s.date) && s.date >= inicioStr)
-        .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
+        .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training', completed: null }))
 
       if (nuevasSesiones.length === 0) {
         notificar('No se pudo generar el siguiente trimestre. Tu plan actual se ha conservado. Inténtalo de nuevo.', 'error')
@@ -312,7 +312,7 @@ export default function CalendarioPage() {
       const fechasConCompeticion = new Set((competiciones || []).map((c: any) => c.date))
       const nuevasSesiones = resultado.sesiones
         .filter((s: any) => !fechasConCompeticion.has(s.date))
-        .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
+        .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training', completed: null }))
 
       if (nuevasSesiones.length === 0) {
         notificar('No se pudo recalcular el plan. Tu plan actual se ha conservado. Inténtalo de nuevo.', 'error')
@@ -425,7 +425,7 @@ export default function CalendarioPage() {
       const fechasConCompeticion = new Set((competiciones || []).map((c: any) => c.date))
       const nuevasSesiones = sesionesFinales
         .filter((s: any) => !fechasConCompeticion.has(s.date))
-        .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training' }))
+        .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training', completed: null }))
 
       const { error: errorInsert } = await supabase.from('sessions').insert(nuevasSesiones)
       if (errorInsert) {

@@ -1,7 +1,8 @@
 'use client'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
-import { generarPlanAction, recalcularPlanAction, chatAsistenteAction, ajustarVentanaCompeticionAction } from './actions'
+import { generarPlanAction, recalcularPlanAction, ajustarVentanaCompeticionAction } from './actions'
+import { asistenteChatAction, aplicarCambioPlanAction } from './actionsAsistente'
 import { calcularCargaAlostatica, actualizarDurezaSemanal, obtenerDurezaSemanal } from '@/lib/fatigaService'
 import CalendarMonth from '@/components/calendar/CalendarMonth'
 import { useToast } from '@/components/ui/Toast'
@@ -37,8 +38,8 @@ export default function CalendarioPage() {
   const extenderDescartadoRef = useRef(false)
 
   const [chatAbierto, setChatAbierto] = useState(false)
-  const [mensajesChat, setMensajesChat] = useState<{ role: string; content: string }[]>([
-    { role: 'assistant', content: '¡Hola! Soy tu asistente de entrenamiento. Puedo ayudarte a ajustar tu plan, responder dudas o hacer cambios. ¿En qué te ayudo?' }
+  const [mensajesChat, setMensajesChat] = useState<{ role: string; content: string; accion?: any }[]>([
+    { role: 'assistant', content: '¡Hola! Soy tu asistente y puedo modificar tu plan: dime cosas como "me duele la planta del pie, quita el running 10 días" o "esta semana no podré salir en bici". Te propondré el cambio y tú lo confirmas. También recuerdo tus preferencias para futuros planes.' }
   ])
   const [inputChat, setInputChat] = useState('')
   const [cargandoChat, setCargandoChat] = useState(false)
@@ -132,6 +133,15 @@ export default function CalendarioPage() {
     if (chatAbierto) chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [mensajesChat, chatAbierto])
 
+  // Añade a las instrucciones las preferencias duraderas aprendidas por el asistente,
+  // para que TODOS los planes (generar, extender, recalcular) las respeten.
+  const conNotas = async (base: string): Promise<string> => {
+    const { data } = await supabase.from('assistant_notes').select('nota').eq('user_id', userId)
+    const notas = (data || []).map((n: any) => '- ' + n.nota).join('\n')
+    if (!notas) return base
+    return [base, 'PREFERENCIAS DURADERAS DEL ATLETA (respétalas siempre):\n' + notas].filter(Boolean).join('\n\n')
+  }
+
   const handleExportarICS = async () => {
     if (!userId) return
     setExportando(true)
@@ -169,7 +179,7 @@ export default function CalendarioPage() {
         .from('sessions').select('*')
         .eq('user_id', userId).eq('day_type', 'competition')
 
-      const resultado = await generarPlanAction(perfil, competiciones || [], hoy, fechaFin, instruccionesLibres)
+      const resultado = await generarPlanAction(perfil, competiciones || [], hoy, fechaFin, await conNotas(instruccionesLibres))
 
       if (!resultado?.sesiones || resultado.sesiones.length === 0) {
         notificar('No se pudo generar el plan (la IA no devolvió sesiones). Inténtalo de nuevo.', 'error')
@@ -231,7 +241,7 @@ export default function CalendarioPage() {
         .from('sessions').select('*')
         .eq('user_id', userId).eq('day_type', 'competition')
 
-      const resultado = await generarPlanAction(perfil, competiciones || [], inicioStr, finStr, '')
+      const resultado = await generarPlanAction(perfil, competiciones || [], inicioStr, finStr, await conNotas(''))
 
       if (!resultado?.sesiones || resultado.sesiones.length === 0) {
         notificar('No se pudo generar el siguiente trimestre. Tu plan actual se ha conservado. Inténtalo de nuevo.', 'error')
@@ -300,7 +310,7 @@ export default function CalendarioPage() {
         perfil, historial || [], competiciones || [],
         ca || { ca: 3, estado: 'Moderado', recomendacion: 'Según plan', acr: 1, componentes: {} },
         'Recálculo manual solicitado por el usuario',
-        instruccionesLibres
+        await conNotas(instruccionesLibres)
       )
 
       // 1. Si la IA no devolvió sesiones válidas, NO tocamos nada.
@@ -466,20 +476,163 @@ export default function CalendarioPage() {
     setInputChat('')
     setCargandoChat(true)
     try {
+      const toStr = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      const hoyStr = toStr(new Date())
+      const dFin = new Date(); dFin.setDate(dFin.getDate() + 21)
+
+      // Contexto fresco para el asistente: 21 días de plan + preferencias aprendidas
+      const { data: prox } = await supabase
+        .from('sessions')
+        .select('date, discipline, day_type, planned_zone, planned_duration, title')
+        .eq('user_id', userId)
+        .gte('date', hoyStr).lte('date', toStr(dFin))
+        .order('date', { ascending: true })
+
+      const { data: notasData } = await supabase
+        .from('assistant_notes').select('nota').eq('user_id', userId)
+
       const contexto = {
-        perfil, ca,
-        sesionesProximas: sessions
-          .filter(s => s.date >= new Date().toISOString().split('T')[0])
-          .slice(0, 10),
+        perfil, ca, hoy: hoyStr,
+        sesionesProximas: prox || [],
+        notas: (notasData || []).map((n: any) => n.nota),
       }
-      const respuesta = await chatAsistenteAction(
+
+      const respuesta = await asistenteChatAction(
         historial.map(m => ({ role: m.role, content: m.content })), contexto
       )
-      if (respuesta) setMensajesChat([...historial, { role: 'assistant', content: respuesta }])
+
+      // Extraer propuesta de cambio (<accion>) y preferencia duradera (<nota>)
+      let texto = respuesta
+      let accion: any = null
+      const mAcc = respuesta.match(/<accion>([\s\S]*?)<\/accion>/)
+      if (mAcc) {
+        try { accion = JSON.parse(mAcc[1]) } catch { accion = null }
+        texto = texto.replace(mAcc[0], '').trim()
+        if (accion && (!accion.desde || !accion.hasta || !accion.instruccion)) accion = null
+      }
+      const mNota = respuesta.match(/<nota>([\s\S]*?)<\/nota>/)
+      if (mNota) {
+        const nota = mNota[1].trim()
+        texto = texto.replace(mNota[0], '').trim()
+        if (nota) {
+          const { error: errNota } = await supabase.from('assistant_notes').insert({ user_id: userId, nota })
+          if (!errNota) notificar('Preferencia anotada: se tendrá en cuenta en todos los planes futuros.', 'info')
+        }
+      }
+
+      if (texto || accion) {
+        setMensajesChat([...historial, { role: 'assistant', content: texto || 'Propuesta de cambio lista.', accion }])
+      }
     } catch (err) {
       notificar('El asistente no está disponible ahora mismo. Inténtalo de nuevo.', 'error')
     }
     setCargandoChat(false)
+  }
+
+  // Aplica al calendario el cambio propuesto por el asistente (rango acotado,
+  // insertar antes de borrar, competiciones intocables).
+  const handleAplicarAccion = async (accion: any, idxMensaje: number) => {
+    if (!perfil || !accion?.desde || !accion?.hasta || !accion?.instruccion) return
+    setGenerando(true)
+    try {
+      const toStr = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      const hoyStr = toStr(new Date())
+
+      // Rango acotado: nunca en el pasado, máximo 21 días
+      const desde = accion.desde < hoyStr ? hoyStr : accion.desde
+      const dMax = new Date(desde + 'T12:00:00'); dMax.setDate(dMax.getDate() + 20)
+      const maxStr = toStr(dMax)
+      const hasta = accion.hasta > maxStr ? maxStr : accion.hasta
+      if (hasta < desde) {
+        notificar('El rango del cambio propuesto ya ha pasado.', 'info')
+        setGenerando(false)
+        return
+      }
+
+      const dCtxIni = new Date(desde + 'T12:00:00'); dCtxIni.setDate(dCtxIni.getDate() - 3)
+      const dCtxFin = new Date(hasta + 'T12:00:00'); dCtxFin.setDate(dCtxFin.getDate() + 3)
+      const ctxIni = toStr(dCtxIni)
+      const ctxFin = toStr(dCtxFin)
+
+      const { data: rango } = await supabase
+        .from('sessions').select('*')
+        .eq('user_id', userId)
+        .gte('date', ctxIni).lte('date', ctxFin)
+      const todas = rango || []
+
+      const { data: competiciones } = await supabase
+        .from('sessions').select('*')
+        .eq('user_id', userId).eq('day_type', 'competition')
+
+      const sesionesRango = todas.filter((s: any) =>
+        s.date >= desde && s.date <= hasta && s.day_type !== 'competition')
+      const sesionesContexto = todas.filter((s: any) =>
+        (s.date < desde || s.date > hasta) && s.day_type !== 'competition')
+
+      const resultado = await aplicarCambioPlanAction(
+        perfil, accion.instruccion, sesionesRango, sesionesContexto, competiciones || [], desde, hasta
+      )
+
+      // Si la IA no devolvió sesiones, NO tocamos nada.
+      if (!resultado?.sesiones || resultado.sesiones.length === 0) {
+        notificar('No se pudo aplicar el cambio. Tu plan actual se ha conservado.', 'error')
+        setGenerando(false)
+        return
+      }
+
+      // Red de seguridad: rellenar días del rango sin sesión como Descanso
+      const fechasGeneradas = new Set(resultado.sesiones.map((s: any) => s.date))
+      const fechasConCompeticion = new Set((competiciones || []).map((c: any) => c.date))
+      const sesionesFinales = [...resultado.sesiones]
+      const cur = new Date(desde + 'T12:00:00')
+      const finV = new Date(hasta + 'T12:00:00')
+      while (cur <= finV) {
+        const ds = toStr(cur)
+        if (!fechasConCompeticion.has(ds) && !fechasGeneradas.has(ds)) {
+          sesionesFinales.push({
+            date: ds, discipline: 'Descanso', day_type: 'rest',
+            planned_zone: null, planned_duration: null, planned_load: null,
+            title: 'Descanso', description: null, type: 'rest',
+          })
+        }
+        cur.setDate(cur.getDate() + 1)
+      }
+
+      // PRIMERO insertar. Si falla, NO borramos nada.
+      const nuevasSesiones = sesionesFinales
+        .filter((s: any) => !fechasConCompeticion.has(s.date))
+        .map((s: any) => ({ ...s, user_id: userId, type: s.day_type || 'training', completed: null }))
+
+      const { error: errorInsert } = await supabase.from('sessions').insert(nuevasSesiones)
+      if (errorInsert) {
+        notificar('No se pudo guardar el cambio. Tu plan actual se ha conservado: ' + errorInsert.message, 'error')
+        setGenerando(false)
+        return
+      }
+
+      // Solo si insertó bien, borrar las antiguas del rango (por id)
+      const idsAntiguos = sesionesRango.map((s: any) => s.id)
+      if (idsAntiguos.length > 0) {
+        const { error: errorDelete } = await supabase.from('sessions')
+          .delete().in('id', idsAntiguos)
+        if (errorDelete) {
+          notificar('El cambio se aplicó, pero quedaron sesiones antiguas duplicadas. Revisa el calendario.', 'info')
+        }
+      }
+
+      // Consumir la acción del mensaje para que no pueda aplicarse dos veces
+      setMensajesChat(prev => prev.map((m, i) => i === idxMensaje ? { ...m, accion: null } : m))
+      setMensajesChat(prev => [...prev, { role: 'assistant', content: `Cambio aplicado al calendario (${desde} → ${hasta}) ✓` }])
+
+      await fetchData()
+      notificar('Cambio del asistente aplicado al plan.', 'success')
+    } catch (err: any) {
+      if (String(err?.message || err).includes('SALDO_INSUFICIENTE')) setSinSaldo(true)
+      else notificar('Hubo un error al aplicar el cambio. Tu plan actual se ha conservado.', 'error')
+    }
+    setGenerando(false)
   }
 
   const prev = () => {
@@ -774,6 +927,12 @@ export default function CalendarioPage() {
                   <div className={`text-xs rounded-xl px-3 py-2 max-w-[85%] leading-relaxed ${
                     m.role === 'user' ? 'bg-blue-900 text-blue-100' : 'bg-gray-800 text-gray-200'
                   }`}>{m.content}</div>
+                  {m.accion && (
+                    <button onClick={() => handleAplicarAccion(m.accion, i)} disabled={generando}
+                      className="text-xs bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white rounded-xl px-3 py-2 mt-1 transition">
+                      {generando ? '⏳ Aplicando...' : `✓ Aplicar al calendario (${m.accion.desde} → ${m.accion.hasta})`}
+                    </button>
+                  )}
                 </div>
               ))}
               {cargandoChat && (

@@ -1,0 +1,277 @@
+'use server'
+
+// Asistente con capacidad de ACTUAR sobre el plan:
+// - asistenteChatAction (Haiku): conversa, propone cambios estructurados y detecta
+//   preferencias duraderas del atleta.
+// - aplicarCambioPlanAction (Sonnet): regenera únicamente el rango de días del cambio
+//   propuesto, siguiendo la instrucción del asistente.
+// Archivo autocontenido: duplica unos pocos helpers de actions.ts a propósito.
+
+const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages'
+const MODEL_CAMBIOS = 'claude-sonnet-4-5'
+const MODEL_CHAT = 'claude-haiku-4-5'
+// Los cambios son de rango corto (máx. 21 días): no necesita continuaciones.
+const MAX_TOKENS_CAMBIO = 8000
+
+async function llamarClaude(model: string, maxTokens: number, system: string, messages: any[]): Promise<string> {
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) throw new Error('API key no configurada')
+
+  const response = await fetch(ANTHROPIC_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({ model, max_tokens: maxTokens, system, messages }),
+  })
+
+  if (!response.ok) {
+    const err = await response.text()
+    if (err.includes('credit') || err.includes('billing') || err.includes('insufficient')) {
+      throw new Error('SALDO_INSUFICIENTE')
+    }
+    throw new Error(err)
+  }
+  const data = await response.json()
+  if (data.stop_reason === 'max_tokens') throw new Error('RESPUESTA_TRUNCADA')
+  return data.content?.[0]?.text || ''
+}
+
+function parsearRespuesta(texto: string): any[] {
+  const sesiones: any[] = []
+  const lineas = texto.split('\n').filter(l => l.trim() && !l.startsWith('#'))
+
+  const normalizar: Record<string, string> = {
+    'running': 'Running', 'carrera': 'Running', 'run': 'Running',
+    'bici carretera': 'Bici carretera', 'ciclismo': 'Bici carretera', 'bici': 'Bici carretera', 'bike': 'Bici carretera',
+    'btt': 'BTT', 'mtb': 'BTT',
+    'spinning': 'Spinning', 'spin': 'Spinning',
+    'natación': 'Natación', 'natacion': 'Natación', 'swim': 'Natación',
+    'paddle surf': 'Paddle surf', 'paddle': 'Paddle surf',
+    'fuerza tren inferior': 'Fuerza tren inferior', 'tren inferior': 'Fuerza tren inferior', 'fuerza inferior': 'Fuerza tren inferior',
+    'fuerza tren superior a': 'Fuerza tren superior A', 'tren superior a': 'Fuerza tren superior A', 'dorsal/tríceps': 'Fuerza tren superior A', 'dorsal triceps': 'Fuerza tren superior A',
+    'fuerza tren superior b': 'Fuerza tren superior B', 'tren superior b': 'Fuerza tren superior B', 'hombro/pecho': 'Fuerza tren superior B', 'hombro pecho': 'Fuerza tren superior B',
+    'descanso': 'Descanso', 'rest': 'Descanso', 'brick': 'Running',
+  }
+
+  const DISCIPLINAS_VALIDAS = new Set([
+    'Running', 'Bici carretera', 'BTT', 'Spinning', 'Natación', 'Paddle surf',
+    'Fuerza tren inferior', 'Fuerza tren superior A', 'Fuerza tren superior B',
+  ])
+
+  for (const linea of lineas) {
+    const partes = linea.split('|')
+    if (partes.length < 4) continue
+
+    const [date, disciplineRaw, zona, duracion, carga, descripcion] = partes.map(p => p.trim())
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue
+    if (!disciplineRaw) continue
+
+    const discLower = disciplineRaw.toLowerCase()
+    const discipline = normalizar[discLower] || disciplineRaw
+
+    if (discipline.toLowerCase().includes('competici')) continue
+    if (discipline !== 'Descanso' && !DISCIPLINAS_VALIDAS.has(discipline)) continue
+
+    const dayType = discipline === 'Descanso' ? 'rest' : 'training'
+
+    sesiones.push({
+      date, discipline, day_type: dayType,
+      planned_zone: zona ? parseInt(zona.replace('Z', '').replace('z', '')) || null : null,
+      planned_duration: duracion ? parseInt(duracion) || null : null,
+      planned_load: carga ? parseInt(carga) || null : null,
+      title: descripcion || discipline,
+      description: descripcion || null,
+      type: dayType,
+    })
+  }
+
+  return sesiones
+}
+
+function calcularZonaFTP(ftp: number, zona: string): string {
+  const rangos: Record<string, [number, number]> = {
+    z1: [0.55, 0.65], z2: [0.65, 0.75], z3: [0.75, 0.87],
+    z4: [0.87, 1.00], z5: [1.00, 1.15],
+  }
+  const r = rangos[zona]
+  if (!r) return ''
+  return `Potencia ${Math.round(ftp * r[0])}-${Math.round(ftp * r[1])}w`
+}
+
+function extraerZonasTexto(perfil: any): string {
+  const hr = perfil.heart_rate_zones || {}
+  const pace = perfil.running_paces || {}
+  const ftp = perfil.ftp || null
+  const lineas = ['ZONAS DEL ATLETA:']
+
+  for (const z of ['z1', 'z2', 'z3', 'z4', 'z5']) {
+    const zNum = z.replace('z', 'Z')
+    const hrZ = hr[z] ? `FC ${hr[z].min}-${hr[z].max} ppm` : ''
+    const paceZ = pace[z] ? `Ritmo ${pace[z].max}-${pace[z].min} min/km` : ''
+    const ftpZ = ftp ? calcularZonaFTP(ftp, z) : ''
+    lineas.push(`${zNum}: ${[hrZ, paceZ, ftpZ].filter(Boolean).join(' | ')}`)
+  }
+
+  return lineas.join('\n')
+}
+
+function generarCadenciaTexto(perfil: any, fechaInicio: string, fechaFin: string): string {
+  const sp = perfil.schedule_pattern
+  if (!sp?.cycle_start || !sp?.pattern) return ''
+
+  const pattern: string[] = sp.pattern
+  const shiftEnergy: Record<string, number> = sp.shift_energy || {}
+  const shiftNames: Record<string, string> = {
+    'M': 'Mañanas', 'T': 'Tardes', 'N': 'Noches', 'S': 'Saliente', 'L': 'Libre', 'W': 'Trabajo'
+  }
+
+  const start = new Date(sp.cycle_start + 'T12:00:00')
+  const lineas = ['CADENCIA LABORAL DÍA A DÍA (formato fecha: turno (energía/5)):']
+  const cursor = new Date(fechaInicio + 'T12:00:00')
+
+  while (true) {
+    const dateStr = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`
+    if (dateStr > fechaFin) break
+    const diff = Math.round((cursor.getTime() - start.getTime()) / 86400000)
+    const idx = ((diff % pattern.length) + pattern.length) % pattern.length
+    const turno = pattern[idx]
+    const energia = shiftEnergy[turno] || 3
+    lineas.push(`${dateStr}: ${shiftNames[turno] || turno} (${energia}/5)`)
+    cursor.setDate(cursor.getDate() + 1)
+  }
+
+  return lineas.join('\n')
+}
+
+const fmtSesion = (s: any) =>
+  `${s.date}|${s.discipline || s.day_type}|${s.planned_zone ? 'Z' + s.planned_zone : ''}|${s.planned_duration || ''}min|${s.title || ''}`
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHAT (Haiku): conversa, propone cambios (<accion>) y aprende preferencias (<nota>)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function asistenteChatAction(mensajes: any[], contexto: any): Promise<string> {
+  const notas: string[] = contexto.notas || []
+  const proximas: any[] = contexto.sesionesProximas || []
+
+  const system = `Eres el asistente de CURTIMIENTO, la app de planificación multideporte del atleta. Respondes SIEMPRE en español y de forma concisa (2-4 frases).
+
+DATOS ACTUALES:
+- Hoy es ${contexto.hoy}
+- Carga Alostática: ${contexto.ca?.ca ?? '?'} (${contexto.ca?.estado ?? '?'}) | ACR: ${contexto.ca?.acr ?? '?'}
+${notas.length > 0 ? `- Preferencias duraderas ya aprendidas del atleta:\n${notas.map(n => `  · ${n}`).join('\n')}` : ''}
+- Plan de los próximos 21 días (fecha|disciplina|zona|duración|título):
+${proximas.length > 0 ? proximas.map(fmtSesion).join('\n') : 'Sin sesiones planificadas'}
+
+CAPACIDAD 1 — PROPONER CAMBIOS EN EL PLAN:
+Cuando el atleta pida modificar su plan (mover, quitar, suavizar, sustituir o adaptar sesiones por lesión, clima, tiempo, imprevistos...), explica tu propuesta en lenguaje natural y añade AL FINAL, en una sola línea exacta:
+<accion>{"desde":"YYYY-MM-DD","hasta":"YYYY-MM-DD","instruccion":"instrucción concreta y autosuficiente para regenerar esos días"}</accion>
+Reglas:
+- Usa el rango MÍNIMO de días necesario, siempre desde hoy o después, y de 21 días como máximo. Para cambios de mayor alcance, recomienda el botón "Recalcular plan".
+- La "instruccion" debe entenderse sin leer esta conversación: incluye el motivo (lesión, clima, falta de tiempo...) y qué hacer (p. ej. "El atleta tiene molestias en la planta del pie: sustituye todo el running por bici o natación de zona equivalente, manteniendo la estructura del resto").
+- SOLO emite <accion> si el atleta pide un cambio. Nunca para preguntas informativas.
+- No puedes tocar competiciones ni sesiones pasadas.
+- Deja claro que el cambio no se aplica hasta que pulse el botón de confirmación que verá en el chat.
+
+CAPACIDAD 2 — APRENDER PREFERENCIAS DURADERAS:
+Si el atleta expresa una preferencia o condición ESTABLE (no un imprevisto puntual), p. ej. "el asfalto me castiga la rodilla" o "los lunes nunca puedo nadar", añade al final:
+<nota>la preferencia resumida en una frase corta</nota>
+Solo para información duradera útil en futuros planes. No la repitas si ya está en la lista de preferencias aprendidas.`
+
+  return await llamarClaude(MODEL_CHAT, 1024, system, mensajes)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// APLICAR CAMBIO (Sonnet): regenera solo el rango de días con la instrucción
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SYSTEM_CAMBIO = `Eres un entrenador experto en multideporte modificando un rango corto de días del plan de un atleta según una instrucción concreta.
+Respondes ÚNICAMENTE con las sesiones en formato de texto plano, una por línea.
+Formato estricto: YYYY-MM-DD|Disciplina|Zona|Duración_min|Carga_1-10|Descripción_corta
+- Zona: Z1, Z2, Z3, Z4 o Z5 (vacío para fuerza y descanso)
+- Disciplinas válidas (usa EXACTAMENTE estos nombres): Running, Bici carretera, BTT, Spinning, Fuerza tren inferior, Fuerza tren superior A, Fuerza tren superior B, Descanso
+- USA ÚNICAMENTE las disciplinas del perfil del atleta
+- NUNCA generes sesiones de tipo Competición
+- Para Z3/Z4/Z5 incluye series y ritmos en la descripción. Para el resto: descripción de máximo 5 palabras o vacía
+- Sin cabeceras, sin texto adicional, sin markdown
+
+CRITERIO:
+- Aplica la instrucción del atleta perdiendo lo mínimo posible del estímulo planificado: adapta o mueve las sesiones clave antes que eliminarlas.
+- Los días NO afectados por la instrucción se mantienen lo más parecidos posible al plan actual.
+- Nunca dos días Z4 o Z5 consecutivos. Nunca dos días seguidos de la misma disciplina de cardio.
+- Día antes y después de Z4/Z5: suave (Z1, Z2 de otra disciplina o fuerza tren superior).
+- Respeta la energía de cada día según el turno laboral. Sin Z3/Z4/Z5 los días de turno de Mañanas.
+- Tu rango debe ENCAJAR con los días fijos anteriores y posteriores (sin choques de intensidad ni disciplina).
+- Respeta las puestas a punto de las competiciones cercanas según su importancia.`
+
+export async function aplicarCambioPlanAction(
+  perfil: any,
+  instruccion: string,
+  sesionesRango: any[],
+  sesionesContexto: any[],
+  competiciones: any[],
+  fechaInicio: string,
+  fechaFin: string
+): Promise<{ sesiones: any[] }> {
+
+  const zonasTexto = extraerZonasTexto(perfil)
+  const cadencia = generarCadenciaTexto(perfil, fechaInicio, fechaFin)
+
+  const compCercanas = competiciones.filter((c: any) => {
+    const diff = Math.abs(
+      (new Date(c.date + 'T12:00:00').getTime() - new Date(fechaInicio + 'T12:00:00').getTime()) / 86400000
+    )
+    return diff <= 21
+  })
+
+  const prompt = `Modifica SOLO los días del ${fechaInicio} al ${fechaFin} según la instrucción del atleta.
+
+PERFIL DEL ATLETA:
+Nombre: ${perfil.name}, Nivel: ${perfil.level}/5
+Disciplinas (SOLO estas): ${perfil.disciplines?.list?.join(', ')}
+Disciplina prioritaria: ${perfil.disciplines?.priority}
+Duración máxima sesión: ${perfil.max_session_duration}min
+${perfil.injuries ? `Lesiones: ${perfil.injuries}` : ''}
+
+${cadencia}
+
+${zonasTexto}
+
+INSTRUCCIÓN DEL ATLETA (aplícala; es la máxima prioridad):
+${instruccion}
+
+PLAN ACTUAL DEL RANGO (lo vas a REEMPLAZAR adaptándolo a la instrucción):
+${sesionesRango.length > 0 ? sesionesRango.map(fmtSesion).join('\n') : 'Sin sesiones'}
+
+DÍAS FIJOS ALREDEDOR (NO los generes; tu rango debe encajar con ellos):
+${sesionesContexto.length > 0 ? sesionesContexto.map(fmtSesion).join('\n') : 'Ninguno'}
+
+${compCercanas.length > 0 ? `COMPETICIONES CERCANAS (no las generes, respeta sus puestas a punto):
+${compCercanas.map((c: any) => `- ${c.date}: ${c.modalidad || ''} ${c.distancia || ''} (${c.competition_importance})`).join('\n')}
+` : ''}
+Genera ÚNICAMENTE las sesiones del ${fechaInicio} al ${fechaFin}, un día por línea, EXCLUYENDO los días de competición:`
+
+  const texto = await llamarClaude(MODEL_CAMBIOS, MAX_TOKENS_CAMBIO, SYSTEM_CAMBIO, [{ role: 'user', content: prompt }])
+  const parseadas = parsearRespuesta(texto)
+
+  const fechasComp = new Set(competiciones.map((c: any) => c.date))
+  const sesiones = parseadas.filter(
+    (s: any) => s.date >= fechaInicio && s.date <= fechaFin && !fechasComp.has(s.date)
+  )
+
+  const { calcularPlannedLoad } = await import('@/lib/fatigaService')
+  const { data: { session: authSession } } = await (await import('@/lib/supabase')).supabase.auth.getSession()
+  if (authSession) {
+    for (const s of sesiones) {
+      if (s.day_type === 'training' && s.planned_zone && s.planned_duration) {
+        const load = await calcularPlannedLoad(authSession.user.id, s.discipline, s.planned_zone, s.planned_duration)
+        if (load !== null) s.planned_load = load
+      }
+    }
+  }
+
+  return { sesiones }
+}

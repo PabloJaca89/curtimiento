@@ -37,6 +37,11 @@ interface SesionMin {
   completed?: boolean | null
 }
 
+// Mínimo de sesiones completadas recientes para que el ACR sea estadísticamente fiable.
+// Con menos historial, el cociente agudo/crónico se dispara artificialmente
+// (p. ej. un plan recién empezado) y generaría falsas alarmas.
+const MIN_SESIONES_PARA_ACR = 5
+
 // Racha de sesiones recientes percibidas como más duras de lo previsto.
 // Cuenta, desde la sesión completada más reciente hacia atrás, cuántas seguidas
 // tienen una desviación (RPE percibida − carga prevista) de al menos +1.
@@ -87,6 +92,11 @@ export function generarAlertasRiesgo(
     ? `Considera convertir la sesión intensa del ${fechaLegible(intensa.date)} (${intensa.discipline} Z${intensa.planned_zone}) en un rodaje suave Z2.`
     : 'Sustituye la próxima sesión intensa por un rodaje suave Z2.'
 
+  // Sesiones completadas recientes con datos: base estadística mínima para el ACR.
+  const nCompletadas = historial.filter(s =>
+    s.day_type === 'training' && s.completed && s.planned_load != null
+  ).length
+
   // ─── Carga Alostática global ───────────────────────────────────────────────
   if (ca.ca >= 4.0) {
     alertas.push({
@@ -107,30 +117,33 @@ export function generarAlertasRiesgo(
   }
 
   // ─── ACR (ratio de carga aguda vs crónica) ────────────────────────────────
-  if (ca.acr >= 1.5) {
-    alertas.push({
-      id: 'acr-pico',
-      nivel: 'alto',
-      titulo: 'Pico de carga brusco',
-      mensaje: `Tu carga de la última semana es muy superior a tu media reciente (ACR ${ca.acr}). Este salto es el patrón asociado a mayor riesgo de lesión.`,
-      sugerencia: 'Reparte mejor la carga: baja el volumen de esta semana y evita añadir sesiones intensas nuevas.',
-    })
-  } else if (ca.acr >= 1.3) {
-    alertas.push({
-      id: 'acr-alto',
-      nivel: 'medio',
-      titulo: 'Carga subiendo rápido',
-      mensaje: `Tu carga semanal está creciendo por encima de lo ideal (ACR ${ca.acr}). Vigila que el aumento no se dispare.`,
-      sugerencia: 'Mantén la carga de esta semana sin incrementos y asegura los días suaves entre sesiones fuertes.',
-    })
-  } else if (ca.acr > 0 && ca.acr < 0.8) {
-    alertas.push({
-      id: 'acr-bajo',
-      nivel: 'info',
-      titulo: 'Carga por debajo de lo habitual',
-      mensaje: `Tu carga reciente ha bajado bastante respecto a tu media (ACR ${ca.acr}). Puede ser recuperación buscada o pérdida de ritmo.`,
-      sugerencia: 'Si no vienes de competición o parón, puedes retomar algo de intensidad con normalidad.',
-    })
+  // Solo con historial suficiente: con pocas sesiones el ratio se infla solo.
+  if (nCompletadas >= MIN_SESIONES_PARA_ACR) {
+    if (ca.acr >= 1.5) {
+      alertas.push({
+        id: 'acr-pico',
+        nivel: 'alto',
+        titulo: 'Pico de carga brusco',
+        mensaje: `Tu carga de la última semana es muy superior a tu media reciente (ACR ${ca.acr}). Este salto es el patrón asociado a mayor riesgo de lesión.`,
+        sugerencia: 'Reparte mejor la carga: baja el volumen de esta semana y evita añadir sesiones intensas nuevas.',
+      })
+    } else if (ca.acr >= 1.3) {
+      alertas.push({
+        id: 'acr-alto',
+        nivel: 'medio',
+        titulo: 'Carga subiendo rápido',
+        mensaje: `Tu carga semanal está creciendo por encima de lo ideal (ACR ${ca.acr}). Vigila que el aumento no se dispare.`,
+        sugerencia: 'Mantén la carga de esta semana sin incrementos y asegura los días suaves entre sesiones fuertes.',
+      })
+    } else if (ca.acr > 0 && ca.acr < 0.8) {
+      alertas.push({
+        id: 'acr-bajo',
+        nivel: 'info',
+        titulo: 'Carga por debajo de lo habitual',
+        mensaje: `Tu carga reciente ha bajado bastante respecto a tu media (ACR ${ca.acr}). Puede ser recuperación buscada o pérdida de ritmo.`,
+        sugerencia: 'Si no vienes de competición o parón, puedes retomar algo de intensidad con normalidad.',
+      })
+    }
   }
 
   // ─── Racha de RPE por encima de lo previsto ────────────────────────────────

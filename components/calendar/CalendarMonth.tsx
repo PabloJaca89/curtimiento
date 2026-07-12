@@ -1,6 +1,7 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import { calcularPlannedLoad } from '@/lib/fatigaService'
 
 const DAY_NAMES = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
 
@@ -378,6 +379,34 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
   const [correctorEnfAmarillo, setCorrectorEnfAmarillo] = useState(false)
   const [correctorEnfRojo, setCorrectorEnfRojo] = useState(false)
 
+  // Esfuerzo estimado en tiempo real (baremos del modelo de fatiga, escala 1-10).
+  // Se recalcula al cambiar disciplina, zona o duración, con un pequeño retardo.
+  const [esfuerzoEstimado, setEsfuerzoEstimado] = useState<number | null>(null)
+
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      const dur = plannedDuration ? parseInt(plannedDuration) : 0
+      const esFuerza = discipline.startsWith('Fuerza')
+      const esEntrenable = discipline && !['rest', 'competition', 'compromise', 'Descanso'].includes(discipline)
+      if (!esEntrenable || !dur || (!esFuerza && !plannedZone)) {
+        setEsfuerzoEstimado(null)
+        return
+      }
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) return
+        const load = await calcularPlannedLoad(session.user.id, discipline, plannedZone || null, dur)
+        setEsfuerzoEstimado(typeof load === 'number' ? load : null)
+      } catch {
+        setEsfuerzoEstimado(null)
+      }
+    }, 400)
+    return () => clearTimeout(timer)
+  }, [discipline, plannedZone, plannedDuration])
+
+  // Esfuerzo a mostrar/guardar: la estimación en vivo si existe; si no, la guardada
+  const loadPrevisto: number | null = esfuerzoEstimado ?? editSession?.planned_load ?? null
+
   const correctorTotal = (correctorCalorAmarillo ? 0.07 : 0) + (correctorCalorRojo ? 0.15 : 0) +
     (correctorEnfAmarillo ? 0.07 : 0) + (correctorEnfRojo ? 0.15 : 0)
 
@@ -397,6 +426,7 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
         actual_duration: actualDuration ? parseInt(actualDuration) : null,
         planned_zone: plannedZone || null, perceived_rpe: perceivedRpe || null,
         energy_level: energy ? parseInt(energy) : null, completed,
+        planned_load: loadPrevisto,
       }).eq('id', editSession!.id)
     } else {
       await supabase.from('sessions').insert({
@@ -410,6 +440,7 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
         modalidad: type === 'competition' ? modalidad : null,
         distancia: type === 'competition' ? distancia : null,
         completed: completed,
+        planned_load: type === 'training' ? loadPrevisto : null,
       })
     }
     setLoading(false)
@@ -522,14 +553,14 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
             </div>
           )}
 
-          {isEdit && editSession?.planned_load && (
+          {isEdit && loadPrevisto !== null && (
             <div className="flex items-center justify-between bg-gray-800 rounded-xl px-4 py-3">
               <span className="text-sm text-gray-300">Esfuerzo previsto por la app</span>
               <div className="flex items-center gap-2">
                 <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold ${
-                  editSession.planned_load >= 8 ? 'bg-red-900 text-red-300' :
-                  editSession.planned_load >= 5 ? 'bg-yellow-900 text-yellow-300' : 'bg-green-900 text-green-300'
-                }`}>{editSession.planned_load}</div>
+                  loadPrevisto >= 8 ? 'bg-red-900 text-red-300' :
+                  loadPrevisto >= 5 ? 'bg-yellow-900 text-yellow-300' : 'bg-green-900 text-green-300'
+                }`}>{loadPrevisto}</div>
                 <span className="text-xs text-gray-500">/ 10</span>
               </div>
             </div>
@@ -588,6 +619,19 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
                   <input className={inputClass} type="number" value={actualDuration} onChange={e => setActualDuration(e.target.value)} placeholder="Ej: 45" />
                 </div>
               )}
+            </div>
+          )}
+
+          {!isEdit && type === 'training' && esfuerzoEstimado !== null && (
+            <div className="flex items-center justify-between bg-gray-800 rounded-xl px-4 py-3">
+              <span className="text-sm text-gray-300">Esfuerzo estimado</span>
+              <div className="flex items-center gap-2">
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold ${
+                  esfuerzoEstimado >= 8 ? 'bg-red-900 text-red-300' :
+                  esfuerzoEstimado >= 5 ? 'bg-yellow-900 text-yellow-300' : 'bg-green-900 text-green-300'
+                }`}>{esfuerzoEstimado}</div>
+                <span className="text-xs text-gray-500">/ 10</span>
+              </div>
             </div>
           )}
 

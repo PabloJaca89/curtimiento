@@ -10,7 +10,7 @@
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages'
 const MODEL_CAMBIOS = 'claude-sonnet-4-5'
 const MODEL_CHAT = 'claude-haiku-4-5'
-// Los cambios son de rango corto (máx. 21 días): no necesita continuaciones.
+// Cada tramo de cambio es de rango corto (máx. 21 días): no necesita continuaciones.
 const MAX_TOKENS_CAMBIO = 8000
 
 async function llamarClaude(model: string, maxTokens: number, system: string, messages: any[]): Promise<string> {
@@ -157,31 +157,33 @@ export async function asistenteChatAction(mensajes: any[], contexto: any): Promi
   const notas: string[] = contexto.notas || []
   const proximas: any[] = contexto.sesionesProximas || []
 
-  const system = `Eres el asistente de CURTIMIENTO, la app de planificación multideporte del atleta. Respondes SIEMPRE en español y de forma concisa (2-4 frases).
+  const system = `Eres el asistente de CURTIMIENTO, la app de planificación multideporte del atleta. Respondes SIEMPRE en español y de forma concisa (2-5 frases).
 
 DATOS ACTUALES:
 - Hoy es ${contexto.hoy}
 - Carga Alostática: ${contexto.ca?.ca ?? '?'} (${contexto.ca?.estado ?? '?'}) | ACR: ${contexto.ca?.acr ?? '?'}
 ${notas.length > 0 ? `- Preferencias duraderas ya aprendidas del atleta:\n${notas.map(n => `  · ${n}`).join('\n')}` : ''}
-- Plan de los próximos 21 días (fecha|disciplina|zona|duración|título):
+- Plan de los próximos días (fecha|disciplina|zona|duración|título):
 ${proximas.length > 0 ? proximas.map(fmtSesion).join('\n') : 'Sin sesiones planificadas'}
 
 CAPACIDAD 1 — PROPONER CAMBIOS EN EL PLAN:
-Cuando el atleta pida modificar su plan (mover, quitar, suavizar, sustituir o adaptar sesiones por lesión, clima, tiempo, imprevistos...), explica tu propuesta en lenguaje natural y añade AL FINAL, en una sola línea exacta:
+Cuando el atleta pida modificar su plan (mover, quitar, suavizar, sustituir o adaptar sesiones por lesión, clima, tiempo, imprevistos...), explica tu propuesta en lenguaje natural y añade AL FINAL una o varias líneas exactas, cada una en su propia línea:
 <accion>{"desde":"YYYY-MM-DD","hasta":"YYYY-MM-DD","instruccion":"instrucción concreta y autosuficiente para regenerar esos días"}</accion>
 Reglas:
-- Usa el rango MÍNIMO de días necesario, siempre desde hoy o después, y de 21 días como máximo. Para cambios de mayor alcance, recomienda el botón "Recalcular plan".
+- LÍMITE TÉCNICO: cada <accion> cubre COMO MÁXIMO 21 días. Si el cambio pedido abarca más de 21 días, NO lo recortes: divídelo en varias <accion> con tramos CONSECUTIVOS, sin huecos ni solapes (ej.: primera del 2026-07-11 al 2026-07-31 y segunda del 2026-08-01 al 2026-08-15). Cada tramo lleva su propia "instruccion" autosuficiente. Máximo 4 tramos; si el cambio abarca más de ~80 días, recomienda en su lugar el botón "Recalcular plan".
+- OBLIGATORIO VERBALIZAR EL ALCANCE: en tu texto di siempre qué fechas exactas cubre el cambio. Si lo has dividido en tramos, enuméralos y explica que es por el límite técnico de 21 días por aplicación. Si por cualquier motivo el rango que propones es menor que el pedido por el atleta, dilo explícitamente y explica por qué.
+- Usa el rango MÍNIMO de días necesario, siempre desde hoy o después.
 - La "instruccion" debe entenderse sin leer esta conversación: incluye el motivo (lesión, clima, falta de tiempo...) y qué hacer (p. ej. "El atleta tiene molestias en la planta del pie: sustituye todo el running por bici o natación de zona equivalente, manteniendo la estructura del resto").
 - SOLO emite <accion> si el atleta pide un cambio. Nunca para preguntas informativas.
 - No puedes tocar competiciones ni sesiones pasadas.
-- Deja claro que el cambio no se aplica hasta que pulse el botón de confirmación que verá en el chat.
+- Deja claro que el cambio no se aplica hasta que pulse el botón de confirmación que verá en el chat (un solo botón aplica todos los tramos en orden).
 
 CAPACIDAD 2 — APRENDER PREFERENCIAS DURADERAS:
 Si el atleta expresa una preferencia o condición ESTABLE (no un imprevisto puntual), p. ej. "el asfalto me castiga la rodilla" o "los lunes nunca puedo nadar", añade al final:
 <nota>la preferencia resumida en una frase corta</nota>
 Solo para información duradera útil en futuros planes. No la repitas si ya está en la lista de preferencias aprendidas.`
 
-  return await llamarClaude(MODEL_CHAT, 1024, system, mensajes)
+  return await llamarClaude(MODEL_CHAT, 2048, system, mensajes)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

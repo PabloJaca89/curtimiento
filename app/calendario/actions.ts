@@ -104,11 +104,15 @@ function parsearRespuesta(texto: string): any[] {
       : discipline.toLowerCase() === 'compromiso' ? 'compromise'
       : 'training'
 
+    // Solo las sesiones de entrenamiento llevan zona, duración y carga.
+    // Descansos y compromisos van siempre a null, aunque la IA rellene esos campos.
+    const esEntreno = dayType === 'training'
+
     sesiones.push({
       date, discipline, day_type: dayType,
-      planned_zone: zona ? parseInt(zona.replace('Z', '').replace('z', '')) || null : null,
-      planned_duration: duracion ? parseInt(duracion) || null : null,
-      planned_load: carga ? parseInt(carga) || null : null,
+      planned_zone: esEntreno && zona ? parseInt(zona.replace('Z', '').replace('z', '')) || null : null,
+      planned_duration: esEntreno && duracion ? parseInt(duracion) || null : null,
+      planned_load: esEntreno && carga ? parseInt(carga) || null : null,
       title: descripcion || discipline,
       description: descripcion || null,
       type: dayType,
@@ -328,9 +332,10 @@ Formato estricto: YYYY-MM-DD|Disciplina|Zona|Duración_min|Carga_1-10|Descripci�
 - NUNCA generes sesiones de tipo Competición
 - Para Z3/Z4/Z5 incluye series y ritmos/potencias en la descripción
 - Para Z1, Z2, fuerza y descanso: descripción de máximo 5 palabras (o vacía). NO detalles nada en las sesiones suaves
-- Sin cabeceras, sin texto adicional, sin markdown`
+- Sin cabeceras, sin texto adicional, sin markdown
+- Si el prompt incluye un bloque "INSTRUCCIONES DEL ATLETA — MÁXIMA PRIORIDAD", esas instrucciones PREVALECEN sobre cualquier regla posterior que las contradiga`
 
-const REGLAS_COMUNES = `REGLAS ESTRICTAS — NO NEGOCIABLES:
+const REGLAS_COMUNES = `REGLAS ESTRICTAS — NO NEGOCIABLES (salvo INSTRUCCIONES DEL ATLETA que digan lo contrario):
 
 DESCANSO:
 - Obligatorio 1 día de descanso cada 8, 9 o 10 días. Cuenta los días desde el último descanso y coloca el siguiente en el día 8, 9 o 10 exactamente. NUNCA antes del día 8 salvo día antes de competición A o B. Esto supone mínimo 3 descansos al mes
@@ -380,6 +385,15 @@ const SYSTEM_PLAN_CACHEADO = [
     cache_control: { type: 'ephemeral' },
   },
 ]
+
+// Detecta si las instrucciones libres del atleta hablan de descansos: en ese caso,
+// la gestión de descansos pasa a ser del atleta + la IA, y los validadores
+// deterministas de descanso (separarDescansos y forzarDescansos) NO deben ejecutarse,
+// porque impondrían el patrón por defecto (1 descanso cada 8-10 días) machacando
+// la instrucción explícita del atleta (p. ej. "dos descansos por semana").
+function atletaGestionaDescansos(instruccionesLibres?: string): boolean {
+  return /descans/i.test(instruccionesLibres || '')
+}
 
 const CARDIO_DISCS = ['Running', 'Bici carretera', 'BTT', 'Spinning', 'Natación', 'Paddle surf']
 
@@ -899,7 +913,8 @@ async function aplicarTodosLosValidadores(
   perfil: any,
   fechaInicio: string,
   fechaFin: string,
-  historialRPE?: any[]
+  historialRPE?: any[],
+  descansosDelAtleta?: boolean
 ) {
   rellenarDiasEnBlanco(sesiones, fechaInicio, fechaFin)
   corregirVisperaCompeticion(sesiones, competiciones)
@@ -909,8 +924,14 @@ async function aplicarTodosLosValidadores(
   aplicarReglasDiaTrabajo(sesiones, perfil)
   forzarSeparacionIntensas(sesiones, perfil)
   aplicarPrePostCompeticion(sesiones, competiciones, perfil)
-  separarDescansos(sesiones, competiciones, perfil)
-  forzarDescansos(sesiones, perfil)
+
+  // Los validadores de descanso imponen el patrón por defecto (1 descanso cada 8-10
+  // días). Si el atleta ha dado instrucciones explícitas sobre descansos, NO se
+  // ejecutan: en ese caso los descansos los deciden el atleta y la IA.
+  if (!descansosDelAtleta) {
+    separarDescansos(sesiones, competiciones, perfil)
+    forzarDescansos(sesiones, perfil)
+  }
 
   // Ajuste determinista por RPE: se aplica el último (sobre duraciones ya definitivas)
   // y antes del cálculo de planned_load, para que la carga refleje la duración ajustada.
@@ -967,14 +988,20 @@ ${compTrimestre.length > 0 ? compTrimestre.map(c => `- ${c.date}: ${c.modalidad 
 COMPETICIONES FUTURAS (orientan la progresión a largo plazo):
 ${compAnuales.length > 0 ? compAnuales.map(c => `- ${c.date}: ${c.modalidad || ''} ${c.distancia || ''} (Importancia ${c.competition_importance})`).join('\n') : 'Ninguna'}
 
-${instruccionesLibres ? `INSTRUCCIONES DEL ATLETA:\n${instruccionesLibres}\n` : ''}
+${instruccionesLibres ? `INSTRUCCIONES DEL ATLETA — MÁXIMA PRIORIDAD:
+${instruccionesLibres}
+Estas instrucciones PREVALECEN sobre cualquier regla de tu sistema que las contradiga (por ejemplo, la frecuencia de descansos o la distribución de zonas). Cúmplelas LITERALMENTE en TODO el rango de fechas del ${fechaInicio} al ${fechaFin}, todos los meses incluidos.
+` : ''}
 Genera el plan completo día a día del ${fechaInicio} al ${fechaFin}, cumpliendo las reglas estrictas de tu sistema:`
 
   const texto = await llamarClaude(SYSTEM_PLAN_CACHEADO, prompt)
   const sesiones = parsearRespuesta(texto)
   if (sesiones.length === 0) throw new Error('No se generaron sesiones válidas')
 
-  await aplicarTodosLosValidadores(sesiones, competiciones, perfil, fechaInicio, fechaFin)
+  await aplicarTodosLosValidadores(
+    sesiones, competiciones, perfil, fechaInicio, fechaFin,
+    undefined, atletaGestionaDescansos(instruccionesLibres)
+  )
 
   return { sesiones }
 }
@@ -1018,15 +1045,20 @@ COMPETICIONES (no las generes, solo para puestas a punto):
 ${competiciones.length > 0 ? competiciones.map(c => `- ${c.date}: ${c.modalidad || ''} ${c.distancia || ''} (${c.competition_importance})`).join('\n') : 'Ninguna'}
 
 MOTIVO: ${motivo}
-${instruccionesLibres ? `INSTRUCCIONES DEL ATLETA: ${instruccionesLibres}` : ''}
-
+${instruccionesLibres ? `INSTRUCCIONES DEL ATLETA — MÁXIMA PRIORIDAD:
+${instruccionesLibres}
+Estas instrucciones PREVALECEN sobre cualquier regla de tu sistema que las contradiga (por ejemplo, la frecuencia de descansos o la distribución de zonas). Cúmplelas LITERALMENTE en TODO el rango de fechas del ${hoy} al ${fechaFin}, todos los meses incluidos.
+` : ''}
 Genera el plan del ${hoy} al ${fechaFin}, cumpliendo las reglas estrictas de tu sistema:`
 
   const texto = await llamarClaude(SYSTEM_PLAN_CACHEADO, prompt)
   const nuevasSesiones = parsearRespuesta(texto)
   if (nuevasSesiones.length === 0) throw new Error('No se generaron sesiones válidas')
 
-  await aplicarTodosLosValidadores(nuevasSesiones, competiciones, perfil, hoy, fechaFin, historial)
+  await aplicarTodosLosValidadores(
+    nuevasSesiones, competiciones, perfil, hoy, fechaFin,
+    historial, atletaGestionaDescansos(instruccionesLibres)
+  )
 
   return { sesiones: nuevasSesiones }
 }

@@ -77,11 +77,15 @@ function parsearRespuesta(texto: string): any[] {
 
     const dayType = discipline === 'Descanso' ? 'rest' : 'training'
 
+    // Solo las sesiones de entrenamiento llevan zona, duración y carga.
+    // Los descansos van siempre a null, aunque la IA rellene esos campos.
+    const esEntreno = dayType === 'training'
+
     sesiones.push({
       date, discipline, day_type: dayType,
-      planned_zone: zona ? parseInt(zona.replace('Z', '').replace('z', '')) || null : null,
-      planned_duration: duracion ? parseInt(duracion) || null : null,
-      planned_load: carga ? parseInt(carga) || null : null,
+      planned_zone: esEntreno && zona ? parseInt(zona.replace('Z', '').replace('z', '')) || null : null,
+      planned_duration: esEntreno && duracion ? parseInt(duracion) || null : null,
+      planned_load: esEntreno && carga ? parseInt(carga) || null : null,
       title: descripcion || discipline,
       description: descripcion || null,
       type: dayType,
@@ -172,6 +176,7 @@ Cuando el atleta pida modificar su plan (mover, quitar, suavizar, sustituir o ad
 Reglas:
 - LÍMITE TÉCNICO: cada <accion> cubre COMO MÁXIMO 21 días. Si el cambio pedido abarca más de 21 días, NO lo recortes: divídelo en varias <accion> con tramos CONSECUTIVOS, sin huecos ni solapes (ej.: primera del 2026-07-11 al 2026-07-31 y segunda del 2026-08-01 al 2026-08-15). Cada tramo lleva su propia "instruccion" autosuficiente. Máximo 4 tramos; si el cambio abarca más de ~80 días, recomienda en su lugar el botón "Recalcular plan".
 - OBLIGATORIO VERBALIZAR EL ALCANCE: en tu texto di siempre qué fechas exactas cubre el cambio. Si lo has dividido en tramos, enuméralos y explica que es por el límite técnico de 21 días por aplicación. Si por cualquier motivo el rango que propones es menor que el pedido por el atleta, dilo explícitamente y explica por qué.
+- COPIA LITERALMENTE en cada "instruccion" los requisitos cuantitativos y condiciones exactas del atleta, sin resumirlos ni suavizarlos. Ej.: si pide "dos días de descanso por semana", la instruccion debe decir "OBLIGATORIO: exactamente dos días de descanso por semana"; si pide "reduce un 30-40% el número de sesiones", la instruccion debe incluir "reduce un 30-40% el número de sesiones".
 - Usa el rango MÍNIMO de días necesario, siempre desde hoy o después.
 - La "instruccion" debe entenderse sin leer esta conversación: incluye el motivo (lesión, clima, falta de tiempo...) y qué hacer (p. ej. "El atleta tiene molestias en la planta del pie: sustituye todo el running por bici o natación de zona equivalente, manteniendo la estructura del resto").
 - SOLO emite <accion> si el atleta pide un cambio. Nunca para preguntas informativas.
@@ -201,7 +206,8 @@ Formato estricto: YYYY-MM-DD|Disciplina|Zona|Duración_min|Carga_1-10|Descripci�
 - Sin cabeceras, sin texto adicional, sin markdown
 
 CRITERIO:
-- Aplica la instrucción del atleta perdiendo lo mínimo posible del estímulo planificado: adapta o mueve las sesiones clave antes que eliminarlas.
+- LA INSTRUCCIÓN DEL ATLETA ES LA MÁXIMA PRIORIDAD Y PREVALECE sobre cualquier otro criterio de esta lista si entran en conflicto (incluidos la frecuencia de descansos, el número de sesiones y la conservación del estímulo). Cúmplela LITERALMENTE en todo el rango, incluidos los requisitos cuantitativos (p. ej. "dos días de descanso por semana" = exactamente dos Descanso en cada semana del rango).
+- Fuera de lo que pida la instrucción, pierde lo mínimo posible del estímulo planificado: adapta o mueve las sesiones clave antes que eliminarlas.
 - Los días NO afectados por la instrucción se mantienen lo más parecidos posible al plan actual.
 - Nunca dos días Z4 o Z5 consecutivos. Nunca dos días seguidos de la misma disciplina de cardio.
 - Día antes y después de Z4/Z5: suave (Z1, Z2 de otra disciplina o fuerza tren superior).
@@ -242,7 +248,7 @@ ${cadencia}
 
 ${zonasTexto}
 
-INSTRUCCIÓN DEL ATLETA (aplícala; es la máxima prioridad):
+INSTRUCCIÓN DEL ATLETA (aplícala LITERALMENTE en todo el rango; es la máxima prioridad y prevalece sobre cualquier otro criterio):
 ${instruccion}
 
 PLAN ACTUAL DEL RANGO (lo vas a REEMPLAZAR adaptándolo a la instrucción):

@@ -468,6 +468,38 @@ export default function CalendarioPage() {
     setGenerando(false)
   }
 
+  // División determinista en tramos: la app (no la IA) trocea cualquier acción en
+  // tramos consecutivos de máximo 21 días, todos con la misma instrucción. Así el
+  // rango pedido se cubre COMPLETO aunque la IA emita una sola acción demasiado larga
+  // o se detenga en un cambio de mes. Tope de seguridad: 5 tramos (~105 días).
+  const MAX_TRAMOS = 5
+  const expandirEnTramos = (acciones: any[]): any[] => {
+    const toStr = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const hoyStr = toStr(new Date())
+    const tramos: any[] = []
+
+    for (const a of acciones) {
+      if (!a?.desde || !a?.hasta || !a?.instruccion) continue
+      const desde = a.desde < hoyStr ? hoyStr : a.desde
+      if (a.hasta < desde) continue
+
+      let ini = new Date(desde + 'T12:00:00')
+      const fin = new Date(a.hasta + 'T12:00:00')
+      while (ini <= fin && tramos.length < MAX_TRAMOS) {
+        const finTramo = new Date(ini)
+        finTramo.setDate(finTramo.getDate() + 20)
+        const f = finTramo <= fin ? finTramo : fin
+        tramos.push({ desde: toStr(ini), hasta: toStr(f), instruccion: a.instruccion })
+        ini = new Date(f)
+        ini.setDate(ini.getDate() + 1)
+      }
+    }
+
+    tramos.sort((a, b) => String(a.desde).localeCompare(String(b.desde)))
+    return tramos
+  }
+
   const handleEnviarChat = async () => {
     if (!inputChat.trim() || cargandoChat) return
     const nuevoMensaje = { role: 'user', content: inputChat }
@@ -505,16 +537,19 @@ export default function CalendarioPage() {
 
       // Extraer propuestas de cambio (una o varias <accion>) y preferencia duradera (<nota>)
       let texto = respuesta
-      const acciones: any[] = []
+      const accionesBrutas: any[] = []
       const accMatches = [...respuesta.matchAll(/<accion>([\s\S]*?)<\/accion>/g)]
       for (const mAcc of accMatches) {
         try {
           const a = JSON.parse(mAcc[1])
-          if (a?.desde && a?.hasta && a?.instruccion) acciones.push(a)
+          if (a?.desde && a?.hasta && a?.instruccion) accionesBrutas.push(a)
         } catch { /* accion mal formada: se ignora */ }
         texto = texto.replace(mAcc[0], '').trim()
       }
-      acciones.sort((a, b) => String(a.desde).localeCompare(String(b.desde)))
+
+      // Troceo determinista en tramos de ≤21 días: garantiza cobertura completa
+      // del rango aunque la IA haya emitido una sola acción demasiado larga.
+      const acciones = expandirEnTramos(accionesBrutas)
 
       const mNota = respuesta.match(/<nota>([\s\S]*?)<\/nota>/)
       if (mNota) {

@@ -415,6 +415,13 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
     'Fuerza tren superior A', 'Fuerza tren superior B', 'Fuerza tren inferior'
   ]
 
+  // Qué inputs tienen consecuencia según el tipo de día:
+  // - Zona, duración planificada y RPE solo alimentan entrenamientos.
+  // - Estado (realizada/no realizada) alimenta entrenamientos y competiciones.
+  // - Título tiene sentido en entrenos, compromisos y cualquier edición.
+  const esEntreno = type === 'training'
+  const esCompeticion = type === 'competition'
+
   const handleSave = async () => {
     setLoading(true)
     const { data: { session } } = await supabase.auth.getSession()
@@ -546,14 +553,14 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
             </div>
           )}
 
-          {(type === 'training' || isEdit) && (
+          {(esEntreno || type === 'compromise' || isEdit) && (
             <div>
               <label className="text-xs text-gray-400 mb-2 block">Título (opcional)</label>
-              <input className={inputClass} value={title} onChange={e => setTitle(e.target.value)} placeholder="Ej: Rodaje Z2 45min" />
+              <input className={inputClass} value={title} onChange={e => setTitle(e.target.value)} placeholder={type === 'compromise' ? 'Ej: Boda, viaje de trabajo...' : 'Ej: Rodaje Z2 45min'} />
             </div>
           )}
 
-          {isEdit && loadPrevisto !== null && (
+          {isEdit && esEntreno && loadPrevisto !== null && (
             <div className="flex items-center justify-between bg-gray-800 rounded-xl px-4 py-3">
               <span className="text-sm text-gray-300">Esfuerzo previsto por la app</span>
               <div className="flex items-center gap-2">
@@ -566,7 +573,7 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
             </div>
           )}
 
-          {isEdit && editSession?.planned_zone && (
+          {isEdit && esEntreno && editSession?.planned_zone && (
             <div className="bg-gray-800 rounded-xl px-4 py-3 space-y-3">
               {editSession.description && (
                 <div className="text-xs text-gray-300 leading-relaxed">
@@ -593,7 +600,7 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
             </div>
           )}
 
-          {(type === 'training' || isEdit) && (
+          {esEntreno && (
             <div>
               <label className="text-xs text-gray-400 mb-2 block">Zona objetivo</label>
               <div className="flex gap-2">
@@ -607,12 +614,14 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
             </div>
           )}
 
-          {(type === 'training' || isEdit) && (
-            <div className={`grid gap-3 ${isPast || isEdit ? 'grid-cols-2' : 'grid-cols-1'}`}>
-              <div>
-                <label className="text-xs text-gray-400 mb-2 block">Duración planificada (min)</label>
-                <input className={inputClass} type="number" value={plannedDuration} onChange={e => setPlannedDuration(e.target.value)} placeholder="Ej: 60" />
-              </div>
+          {(esEntreno || (isEdit && esCompeticion)) && (
+            <div className={`grid gap-3 ${esEntreno && (isPast || isEdit) ? 'grid-cols-2' : 'grid-cols-1'}`}>
+              {esEntreno && (
+                <div>
+                  <label className="text-xs text-gray-400 mb-2 block">Duración planificada (min)</label>
+                  <input className={inputClass} type="number" value={plannedDuration} onChange={e => setPlannedDuration(e.target.value)} placeholder="Ej: 60" />
+                </div>
+              )}
               {(isPast || isEdit) && (
                 <div>
                   <label className="text-xs text-gray-400 mb-2 block">Duración real (min)</label>
@@ -622,7 +631,7 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
             </div>
           )}
 
-          {!isEdit && type === 'training' && esfuerzoEstimado !== null && (
+          {!isEdit && esEntreno && esfuerzoEstimado !== null && (
             <div className="flex items-center justify-between bg-gray-800 rounded-xl px-4 py-3">
               <span className="text-sm text-gray-300">Esfuerzo estimado</span>
               <div className="flex items-center gap-2">
@@ -635,7 +644,7 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
             </div>
           )}
 
-          {(isPast || isEdit) && type === 'training' && (
+          {(isPast || isEdit) && esEntreno && (
             <div>
               <label className="text-xs text-gray-400 mb-2 block">RPE percibida (1-10)</label>
               <div className="flex gap-1">
@@ -665,7 +674,7 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
             </div>
           </div>
 
-          {(isPast || isEdit) && (
+          {(isPast || isEdit) && (esEntreno || esCompeticion) && (
             <div>
               <label className="text-xs text-gray-400 mb-2 block">Estado de la sesión</label>
               <div className="grid grid-cols-3 gap-2">

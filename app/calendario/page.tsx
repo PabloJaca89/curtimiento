@@ -10,6 +10,8 @@ import { generarICS, descargarICS } from '@/lib/icsExport'
 import BorrarPlanModal from '@/components/BorrarPlanModal'
 import Link from 'next/link'
 
+const CLAVE_INSTRUCCIONES = 'curtimiento_instrucciones_plan'
+
 export default function CalendarioPage() {
   const { notificar } = useToast()
   const [view, setView] = useState<'month' | 'week'>('month')
@@ -29,6 +31,7 @@ export default function CalendarioPage() {
   const [showConfirmRecalc, setShowConfirmRecalc] = useState(false)
   const [showModalPlan, setShowModalPlan] = useState(false)
   const [instruccionesLibres, setInstruccionesLibres] = useState('')
+  const [instruccionesGuardadas, setInstruccionesGuardadas] = useState('')
   const [compPendiente, setCompPendiente] = useState<any>(null)
   const [showAjusteVentana, setShowAjusteVentana] = useState(false)
 
@@ -133,6 +136,24 @@ export default function CalendarioPage() {
     if (chatAbierto) chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [mensajesChat, chatAbierto])
 
+  // Instrucciones del último plan generado/recalculado, para poder reutilizarlas
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => {
+    const guardadas = localStorage.getItem(CLAVE_INSTRUCCIONES)
+    if (guardadas) setInstruccionesGuardadas(guardadas)
+  }, [])
+
+  // Persiste las instrucciones usadas y deja el textarea a cero para el próximo uso
+  const consumirInstrucciones = (): string => {
+    const instrucciones = instruccionesLibres
+    if (instrucciones.trim()) {
+      localStorage.setItem(CLAVE_INSTRUCCIONES, instrucciones)
+      setInstruccionesGuardadas(instrucciones)
+    }
+    setInstruccionesLibres('')
+    return instrucciones
+  }
+
   // Añade a las instrucciones las preferencias duraderas aprendidas por el asistente,
   // para que TODOS los planes (generar, extender, recalcular) las respeten.
   const conNotas = async (base: string): Promise<string> => {
@@ -168,6 +189,7 @@ export default function CalendarioPage() {
 
   const handleGenerarPlan = async () => {
     if (!perfil) return
+    const instrucciones = consumirInstrucciones()
     setGenerando(true)
     try {
       const hoy = new Date().toISOString().split('T')[0]
@@ -179,7 +201,7 @@ export default function CalendarioPage() {
         .from('sessions').select('*')
         .eq('user_id', userId).eq('day_type', 'competition')
 
-      const resultado = await generarPlanAction(perfil, competiciones || [], hoy, fechaFin, await conNotas(instruccionesLibres))
+      const resultado = await generarPlanAction(perfil, competiciones || [], hoy, fechaFin, await conNotas(instrucciones))
 
       if (!resultado?.sesiones || resultado.sesiones.length === 0) {
         notificar('No se pudo generar el plan (la IA no devolvió sesiones). Inténtalo de nuevo.', 'error')
@@ -280,6 +302,7 @@ export default function CalendarioPage() {
 
   const handleRecalcular = async () => {
     setShowConfirmRecalc(false)
+    const instrucciones = consumirInstrucciones()
     setGenerando(true)
     try {
       const hoy = new Date().toISOString().split('T')[0]
@@ -310,7 +333,7 @@ export default function CalendarioPage() {
         perfil, historial || [], competiciones || [],
         ca || { ca: 3, estado: 'Moderado', recomendacion: 'Según plan', acr: 1, componentes: {} },
         'Recálculo manual solicitado por el usuario',
-        await conNotas(instruccionesLibres)
+        await conNotas(instrucciones)
       )
 
       // 1. Si la IA no devolvió sesiones válidas, NO tocamos nada.
@@ -751,6 +774,17 @@ export default function CalendarioPage() {
     : 'text-red-400'
     : 'text-gray-400'
 
+  const bloqueInstruccionesGuardadas = instruccionesGuardadas && !instruccionesLibres ? (
+    <div className="mt-3 bg-gray-800/60 border border-gray-700 rounded-xl p-3">
+      <div className="text-xs text-gray-500 mb-1">Instrucciones del plan anterior:</div>
+      <div className="text-xs text-gray-300 whitespace-pre-wrap mb-2">{instruccionesGuardadas}</div>
+      <button onClick={() => setInstruccionesLibres(instruccionesGuardadas)}
+        className="text-xs text-blue-400 hover:text-blue-300 transition">
+        ↺ Usar de nuevo
+      </button>
+    </div>
+  ) : null
+
   return (
     <div className="min-h-screen bg-gray-950 text-white p-4 md:p-6">
       <div className="max-w-6xl mx-auto">
@@ -910,6 +944,7 @@ export default function CalendarioPage() {
               value={instruccionesLibres}
               onChange={e => setInstruccionesLibres(e.target.value)}
             />
+            {bloqueInstruccionesGuardadas}
             <div className="flex gap-3 mt-4">
               <button onClick={() => setShowModalPlan(false)}
                 className="flex-1 bg-gray-800 hover:bg-gray-700 py-3 rounded-xl text-sm transition">
@@ -933,13 +968,14 @@ export default function CalendarioPage() {
               El recálculo tendrá en cuenta la RPE que has registrado en tus últimas sesiones.
             </p>
             <textarea
-              className="w-full bg-gray-800 text-white rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 resize-none mb-4"
+              className="w-full bg-gray-800 text-white rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 resize-none"
               rows={3}
               placeholder="Instrucciones opcionales para la IA: cambios de objetivo, lesiones, preferencias..."
               value={instruccionesLibres}
               onChange={e => setInstruccionesLibres(e.target.value)}
             />
-            <div className="flex gap-3">
+            {bloqueInstruccionesGuardadas}
+            <div className="flex gap-3 mt-4">
               <button onClick={() => setShowConfirmRecalc(false)}
                 className="flex-1 bg-gray-800 hover:bg-gray-700 py-3 rounded-xl text-sm transition">
                 Cancelar

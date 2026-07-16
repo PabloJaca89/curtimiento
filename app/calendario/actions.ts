@@ -395,6 +395,98 @@ function atletaGestionaDescansos(instruccionesLibres?: string): boolean {
   return /descans/i.test(instruccionesLibres || '')
 }
 
+// Extrae de las instrucciones libres un objetivo cuantitativo de descansos semanales
+// ("dos días de descanso a la semana", "3 descansos por semana"...) y, si se nombran
+// meses concretos ("en julio y agosto"), el ámbito de meses al que aplicarlo.
+function extraerObjetivoDescansos(texto?: string): { n: number; meses: number[] } | null {
+  if (!texto) return null
+  const t = texto.toLowerCase()
+  if (!/descans/.test(t) || !/seman/.test(t)) return null
+  const palabras: Record<string, number> = { 'un': 1, 'uno': 1, 'una': 1, 'dos': 2, 'tres': 3, 'cuatro': 4 }
+  const m = t.match(/(\d+|un|uno|una|dos|tres|cuatro)\s+d[ií]as?\s+de\s+descanso/)
+    || t.match(/descans\w*\s+(\d+|un|uno|una|dos|tres|cuatro)\s+d[ií]as?/)
+    || t.match(/(\d+|un|uno|una|dos|tres|cuatro)\s+descansos?/)
+  if (!m) return null
+  const n = palabras[m[1]] ?? parseInt(m[1], 10)
+  if (!n || n < 1 || n > 4) return null
+
+  const MESES_NOMBRE: Record<string, number> = {
+    'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4, 'mayo': 5, 'junio': 6,
+    'julio': 7, 'agosto': 8, 'septiembre': 9, 'setiembre': 9, 'octubre': 10,
+    'noviembre': 11, 'diciembre': 12,
+  }
+  const meses: number[] = []
+  for (const [nombre, num] of Object.entries(MESES_NOMBRE)) {
+    if (t.includes(nombre) && !meses.includes(num)) meses.push(num)
+  }
+  return { n, meses }
+}
+
+function lunesDe(dateStr: string): string {
+  const d = new Date(dateStr + 'T12:00:00')
+  const dow = d.getDay()
+  const diff = dow === 0 ? 6 : dow - 1
+  d.setDate(d.getDate() - diff)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// GARANTÍA DETERMINISTA DE DESCANSOS: la IA no es fiable manteniendo un recuento
+// semanal a lo largo de meses, así que el objetivo de descansos pedido por el atleta
+// se impone por código, semana a semana (lunes-domingo), tras la respuesta de la IA.
+// - Garantiza el MÍNIMO de descansos pedido (no elimina descansos sobrantes).
+// - En semanas parciales el objetivo se prorratea.
+// - Si el atleta nombró meses, solo actúa en esos meses.
+// - Convierte en Descanso las sesiones más prescindibles: primero las más suaves,
+//   en días de menor energía, y separadas de otros descansos. Nunca toca
+//   competiciones ni compromisos.
+function imponerDescansosSemanales(sesiones: any[], objetivo: { n: number; meses: number[] }, perfil: any): void {
+  sesiones.sort((a, b) => a.date.localeCompare(b.date))
+
+  const enAmbito = (s: any) =>
+    objetivo.meses.length === 0 || objetivo.meses.includes(parseInt(s.date.slice(5, 7), 10))
+
+  const semanas: Record<string, any[]> = {}
+  for (const s of sesiones) {
+    if (!enAmbito(s)) continue
+    const k = lunesDe(s.date)
+    if (!semanas[k]) semanas[k] = []
+    semanas[k].push(s)
+  }
+
+  const fechasDescanso = new Set(
+    sesiones.filter((s: any) => s.day_type === 'rest').map((s: any) => s.date)
+  )
+  const toStr = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const adyacenteADescanso = (fecha: string) => {
+    const prev = new Date(fecha + 'T12:00:00'); prev.setDate(prev.getDate() - 1)
+    const next = new Date(fecha + 'T12:00:00'); next.setDate(next.getDate() + 1)
+    return fechasDescanso.has(toStr(prev)) || fechasDescanso.has(toStr(next))
+  }
+
+  for (const dias of Object.values(semanas)) {
+    const requerido = Math.min(
+      objetivo.n,
+      Math.max(dias.length >= 3 ? 1 : 0, Math.round((dias.length * objetivo.n) / 7))
+    )
+    let actuales = dias.filter((s: any) => s.day_type === 'rest').length
+
+    while (actuales < requerido) {
+      const candidatos = dias.filter((s: any) => s.day_type === 'training')
+      if (candidatos.length === 0) break
+      const puntuar = (s: any) =>
+        ((s.planned_zone ?? 2) * 10) + energiaDelDia(s.date, perfil) + (adyacenteADescanso(s.date) ? 100 : 0)
+      candidatos.sort((a: any, b: any) => puntuar(a) - puntuar(b))
+      const elegido = candidatos[0]
+      elegido.discipline = 'Descanso'; elegido.day_type = 'rest'; elegido.type = 'rest'
+      elegido.planned_zone = null; elegido.planned_duration = null; elegido.planned_load = null
+      elegido.title = 'Descanso'; elegido.description = null
+      fechasDescanso.add(elegido.date)
+      actuales++
+    }
+  }
+}
+
 const CARDIO_DISCS = ['Running', 'Bici carretera', 'BTT', 'Spinning', 'Natación', 'Paddle surf']
 
 function construirDescripcionZona(disc: string, zona: number, perfil: any): { title: string; description: string } {
@@ -852,16 +944,18 @@ function validarBloquesLibres(sesiones: any[], competiciones: any[], perfil: any
           if ((primero.planned_zone || 0) < 4) {
             primero.planned_zone = 4
             primero.discipline = discPrioritaria
+            const d4 = construirDescripcionZona(discPrioritaria, 4, perfil)
             primero.title = `${discPrioritaria} Z4 — sesión de calidad`
-            primero.description = `Sesión intensa en Z4. Usar zonas del atleta.`
+            primero.description = d4.description
             primero.planned_load = null
           }
           const ultimo = bloqueLibres[bloqueLibres.length - 1]
           if ((ultimo.planned_zone || 0) < 3) {
             ultimo.planned_zone = 3
             ultimo.discipline = discPrioritaria
+            const d3 = construirDescripcionZona(discPrioritaria, 3, perfil)
             ultimo.title = `${discPrioritaria} Z3 — sweet spot`
-            ultimo.description = `Sesión a ritmo de umbral aeróbico. Usar zonas del atleta.`
+            ultimo.description = d3.description
             ultimo.planned_load = null
           }
         }
@@ -872,7 +966,7 @@ function validarBloquesLibres(sesiones: any[], competiciones: any[], perfil: any
 }
 
 // Corrige Z4/Z5 el día inmediatamente anterior a una competición (sesión corta de activación)
-function corregirVisperaCompeticion(sesiones: any[], competiciones: any[]): void {
+function corregirVisperaCompeticion(sesiones: any[], competiciones: any[], perfil: any): void {
   const fechasCompeticion = new Set(competiciones.map((c: any) => c.date))
   for (const s of sesiones) {
     if ((s.planned_zone || 0) >= 4) {
@@ -882,8 +976,9 @@ function corregirVisperaCompeticion(sesiones: any[], competiciones: any[]): void
       if (fechasCompeticion.has(diaSiguienteStr)) {
         s.planned_zone = 2
         s.planned_duration = ['Bici carretera', 'BTT', 'Spinning'].includes(s.discipline) ? 75 : 30
+        const dAct = construirDescripcionZona(s.discipline, 2, perfil)
         s.title = 'Activación suave pre-competición'
-        s.description = 'Sesión corta de activación. Mantén las piernas sueltas, sin forzar.'
+        s.description = `Sesión corta de activación, piernas sueltas. ${dAct.description}`
         s.planned_load = 3
       }
     }
@@ -914,10 +1009,11 @@ async function aplicarTodosLosValidadores(
   fechaInicio: string,
   fechaFin: string,
   historialRPE?: any[],
-  descansosDelAtleta?: boolean
+  descansosDelAtleta?: boolean,
+  objetivoDescansos?: { n: number; meses: number[] } | null
 ) {
   rellenarDiasEnBlanco(sesiones, fechaInicio, fechaFin)
-  corregirVisperaCompeticion(sesiones, competiciones)
+  corregirVisperaCompeticion(sesiones, competiciones, perfil)
   validarBloquesLibres(sesiones, competiciones, perfil)
   corregirIntensidadYDisciplina(sesiones, perfil)
   corregirFuerzaEstacional(sesiones)
@@ -931,6 +1027,10 @@ async function aplicarTodosLosValidadores(
   if (!descansosDelAtleta) {
     separarDescansos(sesiones, competiciones, perfil)
     forzarDescansos(sesiones, perfil)
+  } else if (objetivoDescansos) {
+    // Garantía determinista: la IA no es fiable contando descansos a lo largo de
+    // meses, así que el mínimo semanal pedido por el atleta se impone por código.
+    imponerDescansosSemanales(sesiones, objetivoDescansos, perfil)
   }
 
   // Ajuste determinista por RPE: se aplica el último (sobre duraciones ya definitivas)
@@ -1000,7 +1100,7 @@ Genera el plan completo día a día del ${fechaInicio} al ${fechaFin}, cumpliend
 
   await aplicarTodosLosValidadores(
     sesiones, competiciones, perfil, fechaInicio, fechaFin,
-    undefined, atletaGestionaDescansos(instruccionesLibres)
+    undefined, atletaGestionaDescansos(instruccionesLibres), extraerObjetivoDescansos(instruccionesLibres)
   )
 
   return { sesiones }
@@ -1057,7 +1157,7 @@ Genera el plan del ${hoy} al ${fechaFin}, cumpliendo las reglas estrictas de tu 
 
   await aplicarTodosLosValidadores(
     nuevasSesiones, competiciones, perfil, hoy, fechaFin,
-    historial, atletaGestionaDescansos(instruccionesLibres)
+    historial, atletaGestionaDescansos(instruccionesLibres), extraerObjetivoDescansos(instruccionesLibres)
   )
 
   return { sesiones: nuevasSesiones }

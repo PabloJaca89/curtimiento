@@ -510,6 +510,46 @@ function construirDescripcionZona(disc: string, zona: number, perfil: any): { ti
   return { title, description }
 }
 
+// Detalle de intensidad objetivo (FC / ritmo / vatios) según el perfil del atleta
+function detalleZona(disc: string, zona: number, perfil: any): string {
+  const z = 'z' + zona
+  const hr = perfil.heart_rate_zones?.[z]
+  const pace = perfil.running_paces?.[z]
+  const ftp = perfil.ftp || null
+  const partes: string[] = []
+  if (hr) partes.push(`FC ${hr.min}-${hr.max} ppm`)
+  if (disc === 'Running' && pace) partes.push(`ritmo ${pace.max}-${pace.min} min/km`)
+  if (['Bici carretera', 'BTT', 'Spinning'].includes(disc) && ftp) {
+    const p = calcularZonaFTP(ftp, z)
+    if (p) partes.push(p.toLowerCase())
+  }
+  return partes.join(' / ')
+}
+
+// Contenido concreto (series) para las sesiones intensas creadas por los validadores,
+// construido de forma determinista a partir de la duración y las zonas del atleta:
+// calentamiento + series con objetivo de FC/ritmo/vatios + recuperaciones + enfriamiento.
+function construirSeriesZona(disc: string, zona: number, duracionMin: number, perfil: any): string {
+  const cal = duracionMin <= 45 ? 10 : 15
+  const enf = duracionMin <= 45 ? 5 : 10
+  const resto = Math.max(10, duracionMin - cal - enf)
+  const detalle = detalleZona(disc, zona, perfil)
+  const obj = detalle ? ` (${detalle})` : ''
+
+  if (zona >= 5) {
+    const n = Math.min(10, Math.max(6, Math.floor(resto / 3)))
+    return `Calentamiento ${cal}' en Z1-Z2 + ${n}x1' en Z5${obj} con 2' de recuperación en Z1 + ${enf}' de enfriamiento en Z1.`
+  }
+  if (zona === 4) {
+    const n = Math.min(6, Math.max(3, Math.floor(resto / 7.5)))
+    return `Calentamiento ${cal}' en Z1-Z2 + ${n}x5' en Z4${obj} con 2'30'' de recuperación en Z1 + ${enf}' de enfriamiento en Z1.`
+  }
+  // Z3: bloques largos tipo sweet spot
+  const bloques = Math.min(3, Math.max(1, Math.floor((resto + 5) / 20)))
+  const contenido = bloques === 1 ? `${resto}' continuos en Z3` : `${bloques}x15' en Z3 con 5' de recuperación en Z2`
+  return `Calentamiento ${cal}' en Z1-Z2 + ${contenido}${obj} + ${enf}' de enfriamiento en Z1.`
+}
+
 function elegirCardioDistinto(prevDisc: string | undefined, nextDisc: string | undefined, cardioDisponible: string[]): string | null {
   let opciones = cardioDisponible.filter(d => d !== prevDisc && d !== nextDisc)
   if (opciones.length === 0) opciones = cardioDisponible.filter(d => d !== prevDisc)
@@ -631,6 +671,89 @@ function asegurarPlannedLoad(sesiones: any[]): void {
       s.planned_load = fallback[s.planned_zone] || 4
     }
   }
+}
+
+// CARGA FIJA DETERMINISTA PARA GIMNASIO: la IA a veces inventa cargas absurdas
+// (p. ej. 8/10 en una sesión de dorsal) y el recálculo por baremos no las corrige
+// porque exige zona y el gimnasio no la tiene. Se impone siempre por código:
+// Fuerza tren inferior = 5/10, Fuerza tren superior A/B = 4/10.
+function fijarCargaGimnasio(sesiones: any[]): void {
+  for (const s of sesiones) {
+    if (s.day_type !== 'training') continue
+    if (s.discipline === 'Fuerza tren inferior') s.planned_load = 5
+    else if (s.discipline === 'Fuerza tren superior A' || s.discipline === 'Fuerza tren superior B') s.planned_load = 4
+  }
+}
+
+// SANEADOR ANTI-INVENCIONES: corrige de forma determinista, ANTES de cualquier otro
+// validador, todo dato que la IA pueda haber inventado:
+// - descarta fechas fuera del rango pedido y fechas duplicadas
+// - sustituye disciplinas que no están en el perfil del atleta (regenerando su descripción)
+// - acota zonas a 1-5 (cardio sin zona → Z2; fuerza y descanso → sin zona)
+// - garantiza duración válida en todo entreno (sin duración → 50'/60'; acotada a [20, máx perfil]),
+//   con lo que el recálculo de carga por baremos ya no puede saltarse ninguna sesión
+function sanearSesiones(sesiones: any[], perfil: any, fechaInicio: string, fechaFin: string): any[] {
+  const lista: string[] = perfil.disciplines?.list || []
+  const cardioDisponible = CARDIO_DISCS.filter(d => lista.includes(d))
+  const maxDur = perfil.max_session_duration || 240
+
+  const vistas = new Set<string>()
+  const resultado: any[] = []
+
+  sesiones.sort((a, b) => a.date.localeCompare(b.date))
+
+  for (const s of sesiones) {
+    if (s.date < fechaInicio || s.date > fechaFin) continue
+    if (vistas.has(s.date)) continue
+    vistas.add(s.date)
+
+    if (s.day_type === 'training') {
+      const esFuerza = typeof s.discipline === 'string' && s.discipline.startsWith('Fuerza')
+
+      // Disciplina fuera del perfil del atleta → sustituir por un cardio de su perfil
+      let sustituida = false
+      if (!esFuerza && !lista.includes(s.discipline)) {
+        const disc = cardioDisponible[0]
+        if (!disc) continue
+        s.discipline = disc
+        sustituida = true
+      }
+
+      // Zona acotada
+      if (esFuerza) {
+        s.planned_zone = null
+      } else {
+        let z = parseInt(s.planned_zone) || 0
+        if (z < 1) z = 2
+        if (z > 5) z = 5
+        s.planned_zone = z
+      }
+
+      // Duración garantizada y acotada
+      let dur = parseInt(s.planned_duration) || 0
+      if (!dur) dur = esFuerza ? 50 : 60
+      dur = Math.max(20, Math.min(dur, maxDur))
+      s.planned_duration = dur
+
+      // Si se sustituyó la disciplina, la descripción antigua ya no vale
+      if (sustituida) {
+        const z = s.planned_zone || 2
+        if (z >= 3) {
+          s.title = `${s.discipline} Z${z} — sesión`
+          s.description = construirSeriesZona(s.discipline, z, s.planned_duration, perfil)
+        } else {
+          const d = construirDescripcionZona(s.discipline, z, perfil)
+          s.title = d.title
+          s.description = d.description
+        }
+        s.planned_load = null
+      }
+    }
+
+    resultado.push(s)
+  }
+
+  return resultado
 }
 
 function aplicarPrePostCompeticion(sesiones: any[], competiciones: any[], perfil: any): void {
@@ -832,7 +955,7 @@ function aplicarReglasDiaTrabajo(sesiones: any[], perfil: any): void {
       s.planned_load = null
       const d = construirDescripcionZona(disc, 4, perfil)
       s.title = `${d.title} (corta, día de trabajo)`
-      s.description = d.description
+      s.description = construirSeriesZona(disc, 4, s.planned_duration, perfil)
       count++
     }
   }
@@ -944,18 +1067,18 @@ function validarBloquesLibres(sesiones: any[], competiciones: any[], perfil: any
           if ((primero.planned_zone || 0) < 4) {
             primero.planned_zone = 4
             primero.discipline = discPrioritaria
-            const d4 = construirDescripcionZona(discPrioritaria, 4, perfil)
+            if (!primero.planned_duration) primero.planned_duration = 60
             primero.title = `${discPrioritaria} Z4 — sesión de calidad`
-            primero.description = d4.description
+            primero.description = construirSeriesZona(discPrioritaria, 4, primero.planned_duration, perfil)
             primero.planned_load = null
           }
           const ultimo = bloqueLibres[bloqueLibres.length - 1]
           if ((ultimo.planned_zone || 0) < 3) {
             ultimo.planned_zone = 3
             ultimo.discipline = discPrioritaria
-            const d3 = construirDescripcionZona(discPrioritaria, 3, perfil)
+            if (!ultimo.planned_duration) ultimo.planned_duration = 60
             ultimo.title = `${discPrioritaria} Z3 — sweet spot`
-            ultimo.description = d3.description
+            ultimo.description = construirSeriesZona(discPrioritaria, 3, ultimo.planned_duration, perfil)
             ultimo.planned_load = null
           }
         }
@@ -1010,15 +1133,29 @@ async function aplicarTodosLosValidadores(
   fechaFin: string,
   historialRPE?: any[],
   descansosDelAtleta?: boolean,
-  objetivoDescansos?: { n: number; meses: number[] } | null
+  objetivoDescansos?: { n: number; meses: number[] } | null,
+  hayInstruccionesUsuario?: boolean
 ) {
+  // Saneado anti-invenciones SIEMPRE y antes que todo lo demás
+  const limpias = sanearSesiones(sesiones, perfil, fechaInicio, fechaFin)
+  sesiones.length = 0
+  sesiones.push(...limpias)
+
   rellenarDiasEnBlanco(sesiones, fechaInicio, fechaFin)
   corregirVisperaCompeticion(sesiones, competiciones, perfil)
-  validarBloquesLibres(sesiones, competiciones, perfil)
-  corregirIntensidadYDisciplina(sesiones, perfil)
-  corregirFuerzaEstacional(sesiones)
-  aplicarReglasDiaTrabajo(sesiones, perfil)
-  forzarSeparacionIntensas(sesiones, perfil)
+
+  // VALIDADORES ESTRUCTURALES: imponen la filosofía de entrenamiento por defecto
+  // (separación de intensas, alternancia de disciplinas, bloques libres, reglas de
+  // día de trabajo, fuerza estacional). Si el atleta ha escrito instrucciones, SU
+  // PETICIÓN MANDA y estos validadores se desactivan para no machacarla. Los de
+  // higiene de datos (saneador, cargas, huecos, competiciones) se aplican siempre.
+  if (!hayInstruccionesUsuario) {
+    validarBloquesLibres(sesiones, competiciones, perfil)
+    corregirIntensidadYDisciplina(sesiones, perfil)
+    corregirFuerzaEstacional(sesiones)
+    aplicarReglasDiaTrabajo(sesiones, perfil)
+    forzarSeparacionIntensas(sesiones, perfil)
+  }
   aplicarPrePostCompeticion(sesiones, competiciones, perfil)
 
   // Los validadores de descanso imponen el patrón por defecto (1 descanso cada 8-10
@@ -1051,6 +1188,7 @@ async function aplicarTodosLosValidadores(
   }
 
   asegurarPlannedLoad(sesiones)
+  fijarCargaGimnasio(sesiones)
 }
 
 export async function generarPlanAction(
@@ -1090,7 +1228,7 @@ ${compAnuales.length > 0 ? compAnuales.map(c => `- ${c.date}: ${c.modalidad || '
 
 ${instruccionesLibres ? `INSTRUCCIONES DEL ATLETA — MÁXIMA PRIORIDAD:
 ${instruccionesLibres}
-Estas instrucciones PREVALECEN sobre cualquier regla de tu sistema que las contradiga (por ejemplo, la frecuencia de descansos o la distribución de zonas). Cúmplelas LITERALMENTE en TODO el rango de fechas del ${fechaInicio} al ${fechaFin}, todos los meses incluidos.
+Estas instrucciones PREVALECEN sobre cualquier regla de tu sistema que las contradiga (por ejemplo, la frecuencia de descansos o la distribución de zonas). Cúmplelas LITERALMENTE en TODO el rango de fechas del ${fechaInicio} al ${fechaFin}, todos los meses incluidos. Si el atleta pide una secuencia o patrón concreto (p. ej. "3 días seguidos de carrera: Z3, Z4 y Z5, y luego descanso"), genera EXACTAMENTE esa secuencia aunque viole las reglas de alternancia, de separación de intensidades o cualquier otra.
 ` : ''}
 Genera el plan completo día a día del ${fechaInicio} al ${fechaFin}, cumpliendo las reglas estrictas de tu sistema:`
 
@@ -1098,9 +1236,13 @@ Genera el plan completo día a día del ${fechaInicio} al ${fechaFin}, cumpliend
   const sesiones = parsearRespuesta(texto)
   if (sesiones.length === 0) throw new Error('No se generaron sesiones válidas')
 
+  // Texto escrito por el atleta en este uso (sin las preferencias duraderas añadidas)
+  const textoUsuario = (instruccionesLibres || '').split('PREFERENCIAS DURADERAS DEL ATLETA')[0].trim()
+
   await aplicarTodosLosValidadores(
     sesiones, competiciones, perfil, fechaInicio, fechaFin,
-    undefined, atletaGestionaDescansos(instruccionesLibres), extraerObjetivoDescansos(instruccionesLibres)
+    undefined, atletaGestionaDescansos(instruccionesLibres), extraerObjetivoDescansos(instruccionesLibres),
+    textoUsuario.length > 0
   )
 
   return { sesiones }
@@ -1147,7 +1289,7 @@ ${competiciones.length > 0 ? competiciones.map(c => `- ${c.date}: ${c.modalidad 
 MOTIVO: ${motivo}
 ${instruccionesLibres ? `INSTRUCCIONES DEL ATLETA — MÁXIMA PRIORIDAD:
 ${instruccionesLibres}
-Estas instrucciones PREVALECEN sobre cualquier regla de tu sistema que las contradiga (por ejemplo, la frecuencia de descansos o la distribución de zonas). Cúmplelas LITERALMENTE en TODO el rango de fechas del ${hoy} al ${fechaFin}, todos los meses incluidos.
+Estas instrucciones PREVALECEN sobre cualquier regla de tu sistema que las contradiga (por ejemplo, la frecuencia de descansos o la distribución de zonas). Cúmplelas LITERALMENTE en TODO el rango de fechas del ${hoy} al ${fechaFin}, todos los meses incluidos. Si el atleta pide una secuencia o patrón concreto (p. ej. "3 días seguidos de carrera: Z3, Z4 y Z5, y luego descanso"), genera EXACTAMENTE esa secuencia aunque viole las reglas de alternancia, de separación de intensidades o cualquier otra.
 ` : ''}
 Genera el plan del ${hoy} al ${fechaFin}, cumpliendo las reglas estrictas de tu sistema:`
 
@@ -1155,9 +1297,13 @@ Genera el plan del ${hoy} al ${fechaFin}, cumpliendo las reglas estrictas de tu 
   const nuevasSesiones = parsearRespuesta(texto)
   if (nuevasSesiones.length === 0) throw new Error('No se generaron sesiones válidas')
 
+  // Texto escrito por el atleta en este uso (sin las preferencias duraderas añadidas)
+  const textoUsuario = (instruccionesLibres || '').split('PREFERENCIAS DURADERAS DEL ATLETA')[0].trim()
+
   await aplicarTodosLosValidadores(
     nuevasSesiones, competiciones, perfil, hoy, fechaFin,
-    historial, atletaGestionaDescansos(instruccionesLibres), extraerObjetivoDescansos(instruccionesLibres)
+    historial, atletaGestionaDescansos(instruccionesLibres), extraerObjetivoDescansos(instruccionesLibres),
+    textoUsuario.length > 0
   )
 
   return { sesiones: nuevasSesiones }

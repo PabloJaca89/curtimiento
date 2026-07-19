@@ -388,7 +388,16 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
       const dur = plannedDuration ? parseInt(plannedDuration) : 0
       const esFuerza = discipline.startsWith('Fuerza')
       const esEntrenable = discipline && !['rest', 'competition', 'compromise', 'Descanso'].includes(discipline)
-      if (!esEntrenable || !dur || (!esFuerza && !plannedZone)) {
+      if (!esEntrenable) {
+        setEsfuerzoEstimado(null)
+        return
+      }
+      // Gimnasio: carga fija determinista (tren inferior 5/10, tren superior 4/10)
+      if (esFuerza) {
+        setEsfuerzoEstimado(discipline === 'Fuerza tren inferior' ? 5 : 4)
+        return
+      }
+      if (!dur || !plannedZone) {
         setEsfuerzoEstimado(null)
         return
       }

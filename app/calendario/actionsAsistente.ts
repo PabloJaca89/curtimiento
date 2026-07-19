@@ -151,6 +151,46 @@ function generarCadenciaTexto(perfil: any, fechaInicio: string, fechaFin: string
 }
 
 
+// Saneador anti-invenciones (versión asistente): descarta fechas duplicadas y acota
+// los datos numéricos que la IA pueda inventar: zonas 1-5 (cardio sin zona → Z2,
+// fuerza sin zona), duración garantizada en todo entreno y acotada a [20, máx perfil].
+function sanearNumeros(sesiones: any[], perfil: any): any[] {
+  const maxDur = perfil.max_session_duration || 240
+  const vistas = new Set<string>()
+  const resultado: any[] = []
+  sesiones.sort((a: any, b: any) => a.date.localeCompare(b.date))
+  for (const s of sesiones) {
+    if (vistas.has(s.date)) continue
+    vistas.add(s.date)
+    if (s.day_type === 'training') {
+      const esFuerza = typeof s.discipline === 'string' && s.discipline.startsWith('Fuerza')
+      if (esFuerza) {
+        s.planned_zone = null
+      } else {
+        let z = parseInt(s.planned_zone) || 0
+        if (z < 1) z = 2
+        if (z > 5) z = 5
+        s.planned_zone = z
+      }
+      let dur = parseInt(s.planned_duration) || 0
+      if (!dur) dur = esFuerza ? 50 : 60
+      dur = Math.max(20, Math.min(dur, maxDur))
+      s.planned_duration = dur
+    }
+    resultado.push(s)
+  }
+  return resultado
+}
+
+// Carga fija determinista para gimnasio (ver actions.ts): inferior 5, superior 4.
+function fijarCargaGimnasio(sesiones: any[]): void {
+  for (const s of sesiones) {
+    if (s.day_type !== 'training') continue
+    if (s.discipline === 'Fuerza tren inferior') s.planned_load = 5
+    else if (s.discipline === 'Fuerza tren superior A' || s.discipline === 'Fuerza tren superior B') s.planned_load = 4
+  }
+}
+
 function energiaDelDia(dateStr: string, perfil: any): number {
   const sp = perfil.schedule_pattern
   if (!sp?.cycle_start || !sp?.pattern) return 3
@@ -370,8 +410,11 @@ Genera ÚNICAMENTE las sesiones del ${fechaInicio} al ${fechaFin}, un día por l
   const parseadas = parsearRespuesta(texto)
 
   const fechasComp = new Set(competiciones.map((c: any) => c.date))
-  const sesiones = parseadas.filter(
-    (s: any) => s.date >= fechaInicio && s.date <= fechaFin && !fechasComp.has(s.date)
+  const sesiones = sanearNumeros(
+    parseadas.filter(
+      (s: any) => s.date >= fechaInicio && s.date <= fechaFin && !fechasComp.has(s.date)
+    ),
+    perfil
   )
 
   // Garantía determinista: si la instrucción pide N descansos por semana,
@@ -389,6 +432,8 @@ Genera ÚNICAMENTE las sesiones del ${fechaInicio} al ${fechaFin}, un día por l
       }
     }
   }
+
+  fijarCargaGimnasio(sesiones)
 
   return { sesiones }
 }

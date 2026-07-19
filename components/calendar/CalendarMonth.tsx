@@ -381,7 +381,13 @@ function DayModal({ date, sessions, editSession, onClose, onRefresh, onCompetiti
 
   // Esfuerzo estimado en tiempo real (baremos del modelo de fatiga, escala 1-10).
   // Se recalcula al cambiar disciplina, zona o duración, con un pequeño retardo.
-  const [esfuerzoEstimado, setEsfuerzoEstimado] = useState<number | null>(null)
+  // Para gimnasio la carga es fija y se calcula YA en el primer render (sin retardo),
+  // de modo que un valor antiguo mal guardado en BD nunca llegue a mostrarse.
+  const [esfuerzoEstimado, setEsfuerzoEstimado] = useState<number | null>(() => {
+    const d = editSession?.discipline || ''
+    if (d.startsWith('Fuerza')) return d === 'Fuerza tren inferior' ? 5 : 4
+    return null
+  })
 
   useEffect(() => {
     const timer = setTimeout(async () => {
